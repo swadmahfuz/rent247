@@ -22,7 +22,11 @@ class TenantPortalController extends Controller
         $invoices = Invoice::with(['billingPeriod.documents', 'lease.unit', 'lease', 'property'])
             ->whereIn('lease_id', $leases->pluck('id'))
             ->whereIn('status', ['issued', 'partial', 'paid'])
-            ->orderByDesc('id')
+            ->join('billing_periods', 'billing_periods.id', '=', 'invoices.billing_period_id')
+            ->orderByDesc('billing_periods.year')
+            ->orderByDesc('billing_periods.month')
+            ->orderByDesc('invoices.id')
+            ->select('invoices.*')
             ->get()
             ->map(function (Invoice $invoice) use ($packetBuilder) {
                 $status = $packetBuilder->attachmentStatus($invoice);
