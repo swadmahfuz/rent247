@@ -4,6 +4,32 @@ import { useMemo, useState } from 'react';
 
 const money = (n) => Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
+function BillFilePickers({ inputKey = 'file', onFile }) {
+    return (
+        <div className="flex flex-wrap gap-3 items-end">
+            <div>
+                <div className="text-xs text-slate-500 mb-0.5">Take photo</div>
+                <input
+                    key={`cam-${inputKey}`}
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    onChange={(e) => onFile(e.target.files?.[0] || null)}
+                />
+            </div>
+            <div>
+                <div className="text-xs text-slate-500 mb-0.5">Choose file</div>
+                <input
+                    key={`file-${inputKey}`}
+                    type="file"
+                    accept=".pdf,.jpg,.jpeg,.png,image/jpeg,image/png"
+                    onChange={(e) => onFile(e.target.files?.[0] || null)}
+                />
+            </div>
+        </div>
+    );
+}
+
 /** Last calendar day of the month before the billing period (YYYY-MM-DD). */
 function defaultMeterServicePeriod(period) {
     const year = Number(period?.year);
@@ -238,6 +264,7 @@ export default function Show({
                         <h3 className="font-semibold">Utility bill copies</h3>
                         <p className="text-xs text-slate-500 mt-1">
                             All uploads are optional and can be added or replaced later. Supported formats: PDF, JPG/JPEG, and PNG.
+                            On a phone, use Take photo to capture a bill with the camera, or Choose file for an existing file/PDF.
                         </p>
                     </div>
 
@@ -268,26 +295,24 @@ export default function Show({
                                     {unit.meters.map((meter) => {
                                         const doc = meterElectricityDocMap[meter.id];
                                         return (
-                                            <div key={meter.id} className="grid md:grid-cols-[12rem_1fr_1fr_auto] gap-2 items-center">
+                                            <div key={meter.id} className="grid md:grid-cols-[12rem_minmax(0,1fr)_auto] gap-2 items-center">
                                                 <div className="text-slate-600">
                                                     Meter {meter.number}
                                                     {meter.name && meter.name !== meter.number && (
                                                         <span className="text-xs text-slate-400"> · {meter.name}</span>
                                                     )}
                                                 </div>
-                                                <div className="min-w-0">
+                                                <div className="min-w-0 space-y-1">
                                                     {doc ? (
                                                         <a href={doc.url} target="_blank" rel="noreferrer" className="text-indigo-600 truncate block">{doc.original_name}</a>
                                                     ) : (
                                                         <span className="text-slate-500">Not uploaded</span>
                                                     )}
+                                                    <BillFilePickers
+                                                        inputKey={`${meter.id}-${unitFileInputVersion}`}
+                                                        onFile={(file) => setMeterElectricityFile(meter.id, file)}
+                                                    />
                                                 </div>
-                                                <input
-                                                    key={`${meter.id}-${unitFileInputVersion}`}
-                                                    type="file"
-                                                    accept=".pdf,.jpg,.jpeg,.png,image/jpeg,image/png"
-                                                    onChange={(e) => setMeterElectricityFile(meter.id, e.target.files?.[0] || null)}
-                                                />
                                                 {doc && (
                                                     <button type="button" className="text-red-600" onClick={() => router.delete(route('billing.documents.destroy', [period.id, doc.id]), { preserveScroll: true })}>Remove</button>
                                                 )}
@@ -316,8 +341,11 @@ export default function Show({
                             ) : (
                                 <p className="text-slate-500">Not uploaded</p>
                             )}
-                            <form onSubmit={(e) => uploadBuildingDoc(e, 'water')} className="flex gap-2 items-center">
-                                <input type="file" accept=".pdf,.jpg,.jpeg,.png,image/jpeg,image/png" onChange={(e) => buildingDocForm.setData('file', e.target.files?.[0] || null)} />
+                            <form onSubmit={(e) => uploadBuildingDoc(e, 'water')} className="flex flex-wrap gap-2 items-end">
+                                <BillFilePickers
+                                    inputKey={`water-${buildingWater?.id || 'new'}`}
+                                    onFile={(file) => buildingDocForm.setData('file', file)}
+                                />
                                 <button className="bg-slate-900 text-white px-3 py-1.5 rounded-md text-xs">Upload</button>
                             </form>
                         </div>
@@ -333,8 +361,11 @@ export default function Show({
                             ) : (
                                 <p className="text-slate-500">Not uploaded</p>
                             )}
-                            <form onSubmit={(e) => uploadBuildingDoc(e, 'electricity')} className="flex gap-2 items-center">
-                                <input type="file" accept=".pdf,.jpg,.jpeg,.png,image/jpeg,image/png" onChange={(e) => buildingDocForm.setData('file', e.target.files?.[0] || null)} />
+                            <form onSubmit={(e) => uploadBuildingDoc(e, 'electricity')} className="flex flex-wrap gap-2 items-end">
+                                <BillFilePickers
+                                    inputKey={`building-elec-${buildingElectricity?.id || 'new'}`}
+                                    onFile={(file) => buildingDocForm.setData('file', file)}
+                                />
                                 <button className="bg-slate-900 text-white px-3 py-1.5 rounded-md text-xs">Upload</button>
                             </form>
                         </div>
