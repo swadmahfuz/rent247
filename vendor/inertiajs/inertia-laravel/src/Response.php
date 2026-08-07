@@ -99,7 +99,9 @@ class Response implements Responsable
         $page = [
             'component' => $this->component,
             'props' => $props,
-            'url' => $request->getBaseUrl().$request->getRequestUri(),
+            // Use path-only URL. getBaseUrl()+getRequestUri() doubles the subdirectory
+            // (e.g. /rent247/rent247/dashboard) when the app is served under a subfolder.
+            'url' => \Illuminate\Support\Str::start(\Illuminate\Support\Str::after($request->fullUrl(), $request->getSchemeAndHttpHost()), '/'),
             'version' => $this->version,
         ];
 

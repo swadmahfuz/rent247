@@ -4,7 +4,9 @@ namespace App\Http\Controllers;
 
 use App\Models\Invoice;
 use App\Models\Payment;
+use App\Models\PeriodMeterInput;
 use App\Models\Property;
+use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Inertia\Inertia;
@@ -20,31 +22,7 @@ class DashboardController extends Controller
             ? collect([$property->id])
             : Property::where('user_id', $user->id)->pluck('id');
 
-        $invoiceQuery = Invoice::whereIn('property_id', $propertyIds)
-            ->whereIn('status', ['issued', 'paid', 'partial']);
-
-        $collectable = (clone $invoiceQuery)->sum('total_amount');
-        $paid = (clone $invoiceQuery)->sum('paid_amount');
-        $outstanding = $collectable - $paid;
         $draftCount = Invoice::whereIn('property_id', $propertyIds)->where('status', 'draft')->count();
-
-        $byMonth = Invoice::query()
-            ->select(
-                'billing_periods.year',
-                'billing_periods.month',
-                DB::raw('SUM(invoices.total_amount) as total'),
-                DB::raw('SUM(invoices.paid_amount) as paid')
-            )
-            ->join('billing_periods', 'billing_periods.id', '=', 'invoices.billing_period_id')
-            ->whereIn('invoices.property_id', $propertyIds)
-            ->whereIn('invoices.status', ['issued', 'paid', 'partial', 'draft'])
-            ->groupBy('billing_periods.year', 'billing_periods.month')
-            ->orderByDesc('billing_periods.year')
-            ->orderByDesc('billing_periods.month')
-            ->limit(12)
-            ->get()
-            ->reverse()
-            ->values();
 
         $recentPayments = Payment::query()
             ->with(['invoice.lease.tenant', 'invoice.property'])
@@ -53,14 +31,125 @@ class DashboardController extends Controller
             ->limit(8)
             ->get();
 
+        if (! $property) {
+            return Inertia::render('Dashboard', [
+                'stats' => [
+                    'billed_ytd' => 0,
+                    'collected_ytd' => 0,
+                    'outstanding' => 0,
+                    'collection_rate' => 0,
+                    'draft_count' => $draftCount,
+                ],
+                'profitRows' => [],
+                'byTenant' => [],
+                'outstandingByTenant' => [],
+                'recentPayments' => $recentPayments,
+            ]);
+        }
+
+        $months = Invoice::query()
+            ->select(
+                'billing_periods.year',
+                'billing_periods.month',
+                DB::raw('SUM(invoices.total_amount) as billed'),
+                DB::raw('SUM(invoices.paid_amount) as collected'),
+                DB::raw('COUNT(invoices.id) as invoice_count')
+            )
+            ->join('billing_periods', 'billing_periods.id', '=', 'invoices.billing_period_id')
+            ->where('invoices.property_id', $property->id)
+            ->whereNotIn('invoices.status', ['void'])
+            ->groupBy('billing_periods.year', 'billing_periods.month')
+            ->orderBy('billing_periods.year')
+            ->orderBy('billing_periods.month')
+            ->get();
+
+        $byTenant = Invoice::query()
+            ->select(
+                'tenants.name as tenant',
+                DB::raw('SUM(invoices.total_amount) as billed'),
+                DB::raw('SUM(invoices.paid_amount) as collected')
+            )
+            ->join('leases', 'leases.id', '=', 'invoices.lease_id')
+            ->join('tenants', 'tenants.id', '=', 'leases.tenant_id')
+            ->where('invoices.property_id', $property->id)
+            ->whereNotIn('invoices.status', ['void', 'draft'])
+            ->groupBy('tenants.name')
+            ->orderByDesc('billed')
+            ->get();
+
+        $utilityCosts = PeriodMeterInput::query()
+            ->select(
+                'billing_periods.year',
+                'billing_periods.month',
+                DB::raw('SUM(period_meter_inputs.amount) as electricity_cost')
+            )
+            ->join('billing_periods', 'billing_periods.id', '=', 'period_meter_inputs.billing_period_id')
+            ->where('billing_periods.property_id', $property->id)
+            ->groupBy('billing_periods.year', 'billing_periods.month')
+            ->get()
+            ->keyBy(fn ($r) => sprintf('%04d-%02d', $r->year, $r->month));
+
+        $profitRows = $months->map(function ($row) use ($utilityCosts) {
+            $key = sprintf('%04d-%02d', $row->year, $row->month);
+            $elec = (float) ($utilityCosts[$key]->electricity_cost ?? 0);
+
+            return [
+                'year' => $row->year,
+                'month' => $row->month,
+                'billed' => (float) $row->billed,
+                'collected' => (float) $row->collected,
+                'utility_cost' => $elec,
+                'profit' => round((float) $row->billed - $elec, 2),
+            ];
+        });
+
+        $openInvoices = Invoice::with(['lease.tenant', 'lease.unit', 'billingPeriod'])
+            ->where('property_id', $property->id)
+            ->whereIn('status', ['issued', 'partial'])
+            ->get();
+
+        $outstandingByTenant = $openInvoices
+            ->groupBy(fn ($inv) => $inv->lease?->tenant?->name ?: 'Unknown')
+            ->map(function ($group, $tenant) {
+                $balance = round($group->sum(fn ($inv) => max(0, (float) $inv->total_amount - (float) $inv->paid_amount)), 2);
+                $oldest = $group->map(function ($inv) {
+                    return $inv->billingPeriod?->bill_date
+                        ?? $inv->issued_at
+                        ?? $inv->created_at;
+                })->filter()->min();
+
+                $ageDays = $oldest
+                    ? Carbon::parse($oldest)->startOfDay()->diffInDays(now()->startOfDay())
+                    : 0;
+
+                return [
+                    'tenant' => $tenant,
+                    'balance' => $balance,
+                    'invoice_count' => $group->count(),
+                    'age_days' => $ageDays,
+                ];
+            })
+            ->values()
+            ->sortByDesc('balance')
+            ->values();
+
+        $year = (int) now()->year;
+        $ytd = $profitRows->filter(fn ($r) => (int) $r['year'] === $year);
+        $billedYtd = round($ytd->sum('billed'), 2);
+        $collectedYtd = round($ytd->sum('collected'), 2);
+        $outstanding = round($outstandingByTenant->sum('balance'), 2);
+
         return Inertia::render('Dashboard', [
             'stats' => [
-                'collectable' => round((float) $collectable, 2),
-                'paid' => round((float) $paid, 2),
-                'outstanding' => round((float) $outstanding, 2),
+                'billed_ytd' => $billedYtd,
+                'collected_ytd' => $collectedYtd,
+                'outstanding' => $outstanding,
+                'collection_rate' => $billedYtd > 0 ? round(($collectedYtd / $billedYtd) * 100, 1) : 0,
                 'draft_count' => $draftCount,
             ],
-            'byMonth' => $byMonth,
+            'profitRows' => $profitRows,
+            'byTenant' => $byTenant,
+            'outstandingByTenant' => $outstandingByTenant,
             'recentPayments' => $recentPayments,
         ]);
     }

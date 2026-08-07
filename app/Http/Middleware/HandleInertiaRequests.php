@@ -52,6 +52,7 @@ class HandleInertiaRequests extends Middleware
             ],
             'properties' => $properties,
             'currentProperty' => $currentProperty,
+            'assetBase' => rtrim((string) (config('app.asset_url') ?: url('/')), '/'),
         ];
     }
 }
