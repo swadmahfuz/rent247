@@ -20,8 +20,8 @@ class TenantPortalController extends Controller
             ->get();
 
         $invoices = Invoice::with(['billingPeriod.documents', 'lease.unit', 'lease', 'property'])
-            ->whereIn('lease_id', $leases->pluck('id'))
-            ->whereIn('status', ['issued', 'partial', 'paid'])
+            ->whereIn('invoices.lease_id', $leases->pluck('id'))
+            ->whereIn('invoices.status', ['issued', 'partial', 'paid'])
             ->join('billing_periods', 'billing_periods.id', '=', 'invoices.billing_period_id')
             ->orderByDesc('billing_periods.year')
             ->orderByDesc('billing_periods.month')
