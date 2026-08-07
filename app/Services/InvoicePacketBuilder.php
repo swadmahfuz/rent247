@@ -6,7 +6,6 @@ use App\Models\BillingPeriodDocument;
 use App\Models\Invoice;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
-use ZipArchive;
 
 class InvoicePacketBuilder
 {
@@ -18,9 +17,8 @@ class InvoicePacketBuilder
      * @return array{
      *   has_attachments: bool,
      *   missing: list<string>,
-     *   files: list<array{name: string, contents: string, mime: string}>,
+     *   contents: string,
      *   download_name: string,
-     *   is_zip: bool,
      *   base: string
      * }
      */
@@ -31,56 +29,18 @@ class InvoicePacketBuilder
         $resolved = $this->resolveAttachments($invoice);
         $lease = $invoice->lease;
 
-        $invoicePdf = $this->pdfGenerator->invoice($invoice)->output();
         $unit = Str::slug($lease?->unit?->label ?: 'unit', '_');
         $tenant = Str::slug($lease?->tenant?->name ?: 'tenant', '_');
-        $base = trim($unit.'-'.$tenant, '-');
+        $base = trim($unit.'-'.$tenant, '-') ?: 'invoice';
 
-        $files = [
-            [
-                'name' => 'invoice.pdf',
-                'contents' => $invoicePdf,
-                'mime' => 'application/pdf',
-            ],
-        ];
-
-        $usedNames = [];
-        foreach ($resolved['attachments'] as $doc) {
-            $absolute = $doc->absolutePath();
-            if (! $absolute) {
-                continue;
-            }
-            $ext = strtolower(pathinfo($doc->original_name, PATHINFO_EXTENSION) ?: pathinfo($absolute, PATHINFO_EXTENSION) ?: 'bin');
-            $prefix = $doc->kind === 'water' ? 'water-bill' : 'electricity-bill';
-            if ($doc->kind === 'electricity' && $meterNumber = $doc->meterNumber()) {
-                $prefix .= '-'.Str::slug($meterNumber, '_');
-            }
-
-            $name = $prefix.'.'.$ext;
-            $suffix = 2;
-            while (isset($usedNames[$name])) {
-                $name = $prefix.'-'.$suffix++.'.'.$ext;
-            }
-            $usedNames[$name] = true;
-
-            $files[] = [
-                'name' => $name,
-                'contents' => file_get_contents($absolute),
-                'mime' => $doc->mime ?: 'application/octet-stream',
-            ];
-        }
-
-        $hasAttachments = count($files) > 1;
+        $contents = $this->pdfGenerator->invoiceWithAttachments($invoice, $resolved['attachments']);
 
         return [
-            'has_attachments' => $hasAttachments,
+            'has_attachments' => $resolved['attachments']->isNotEmpty(),
             'missing' => $resolved['missing'],
-            'files' => $files,
-            'download_name' => $hasAttachments
-                ? ($base ?: 'invoice').'-package.zip'
-                : (($invoice->number ?: $base ?: 'invoice').'.pdf'),
-            'is_zip' => $hasAttachments,
-            'base' => $base ?: 'invoice',
+            'contents' => $contents,
+            'download_name' => ($invoice->number ?: $base).'.pdf',
+            'base' => $base,
         ];
     }
 
@@ -88,27 +48,9 @@ class InvoicePacketBuilder
     {
         $packet = $this->build($invoice);
 
-        if (! $packet['is_zip']) {
-            return response($packet['files'][0]['contents'], 200, [
-                'Content-Type' => 'application/pdf',
-                'Content-Disposition' => 'attachment; filename="'.$packet['download_name'].'"',
-            ]);
-        }
-
-        $tmp = tempnam(sys_get_temp_dir(), 'invpkt');
-        $zip = new ZipArchive();
-        abort_unless($zip->open($tmp, ZipArchive::OVERWRITE) === true, 500, 'Unable to create package.');
-
-        foreach ($packet['files'] as $file) {
-            $zip->addFromString($file['name'], $file['contents']);
-        }
-        $zip->close();
-
-        return response()->streamDownload(function () use ($tmp) {
-            echo file_get_contents($tmp);
-            @unlink($tmp);
-        }, $packet['download_name'], [
-            'Content-Type' => 'application/zip',
+        return response($packet['contents'], 200, [
+            'Content-Type' => 'application/pdf',
+            'Content-Disposition' => 'attachment; filename="'.$packet['download_name'].'"',
         ]);
     }
 
@@ -149,7 +91,7 @@ class InvoicePacketBuilder
             'wants_package' => $wantsPackage,
             'has_attachments' => $hasAttachments,
             'missing' => $resolved['missing'],
-            'label' => $hasAttachments ? 'Download package' : 'Download PDF',
+            'label' => 'Download PDF',
         ];
     }
 

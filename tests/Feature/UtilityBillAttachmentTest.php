@@ -14,7 +14,6 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
-use ZipArchive;
 
 class UtilityBillAttachmentTest extends TestCase
 {
@@ -44,7 +43,7 @@ class UtilityBillAttachmentTest extends TestCase
         $this->assertTrue($lease->attach_electricity_bill);
     }
 
-    public function test_invoice_package_includes_utility_bills_when_required(): void
+    public function test_invoice_pdf_includes_utility_bills_as_extra_pages(): void
     {
         Storage::fake('public');
         $this->seed();
@@ -59,7 +58,6 @@ class UtilityBillAttachmentTest extends TestCase
             'status' => 'draft',
         ]);
 
-        // Minimal invoice generation path: reuse seed lease with rent so invoice can exist.
         $lease->update([
             'attach_water_bill' => true,
             'attach_electricity_bill' => true,
@@ -70,7 +68,7 @@ class UtilityBillAttachmentTest extends TestCase
 
         $this->actingAs($user)->post(route('billing.documents.store', $period), [
             'kind' => 'water',
-            'file' => UploadedFile::fake()->create('water.pdf', 100, 'application/pdf'),
+            'file' => UploadedFile::fake()->image('water.jpg'),
         ])->assertRedirect();
 
         $this->actingAs($user)->post(route('billing.documents.store', $period), [
@@ -79,24 +77,19 @@ class UtilityBillAttachmentTest extends TestCase
             'file' => UploadedFile::fake()->image('elec.jpg'),
         ])->assertRedirect();
 
+        $withoutBills = app(\App\Services\PdfGenerator::class)->invoice($invoice->fresh())->output();
         $response = $this->actingAs($user)->get(route('invoices.pdf', $invoice));
         $response->assertOk();
-        $this->assertStringContainsString('zip', strtolower($response->headers->get('content-type') ?? ''));
+        $this->assertStringContainsString('pdf', strtolower($response->headers->get('content-type') ?? ''));
+        $this->assertStringStartsWith('%PDF', $response->getContent());
 
-        $tmp = tempnam(sys_get_temp_dir(), 'pkt');
-        file_put_contents($tmp, $response->streamedContent());
-        $zip = new ZipArchive();
-        $this->assertTrue($zip->open($tmp) === true);
-        $names = [];
-        for ($i = 0; $i < $zip->numFiles; $i++) {
-            $names[] = $zip->getNameIndex($i);
-        }
-        $zip->close();
-        @unlink($tmp);
-
-        $this->assertContains('invoice.pdf', $names);
-        $this->assertTrue(collect($names)->contains(fn ($n) => str_starts_with($n, 'water-bill.')));
-        $this->assertTrue(collect($names)->contains(fn ($n) => str_starts_with($n, 'electricity-bill.')));
+        $withBills = $response->getContent();
+        $pdf = app(\App\Services\PdfGenerator::class);
+        $this->assertGreaterThan(
+            $pdf->pageCount($withoutBills),
+            $pdf->pageCount($withBills)
+        );
+        $this->assertGreaterThanOrEqual(3, $pdf->pageCount($withBills));
     }
 
     public function test_building_electricity_is_not_used_when_unit_bill_required(): void
@@ -180,7 +173,7 @@ class UtilityBillAttachmentTest extends TestCase
         ]);
     }
 
-    public function test_unit_with_several_meters_gets_every_meter_bill_in_the_package(): void
+    public function test_unit_with_several_meters_gets_every_meter_bill_page(): void
     {
         Storage::fake('public');
         $this->seed();
@@ -218,12 +211,12 @@ class UtilityBillAttachmentTest extends TestCase
         ])->assertRedirect();
 
         $packet = app(\App\Services\InvoicePacketBuilder::class)->build($invoice->fresh());
-        $names = collect($packet['files'])->pluck('name');
+        $this->assertStringStartsWith('%PDF', $packet['contents']);
+        $this->assertTrue($packet['has_attachments']);
 
-        $this->assertSame($meters->count(), $names->filter(fn ($n) => str_starts_with($n, 'electricity-bill'))->count());
-        foreach ($meters as $meter) {
-            $this->assertTrue($names->contains(fn ($n) => str_contains($n, strtolower($meter->code))));
-        }
+        $pdf = app(\App\Services\PdfGenerator::class);
+        $basePages = $pdf->pageCount($pdf->invoice($invoice->fresh())->output());
+        $this->assertSame($basePages + $meters->count(), $pdf->pageCount($packet['contents']));
     }
 
     public function test_invoice_download_still_works_when_selected_bill_is_not_uploaded(): void
@@ -272,7 +265,7 @@ class UtilityBillAttachmentTest extends TestCase
         $this->assertStringStartsWith('%PDF', $response->getContent());
     }
 
-    public function test_portal_cannot_download_another_tenants_invoice_package(): void
+    public function test_portal_cannot_download_another_tenants_invoice(): void
     {
         Storage::fake('public');
         $this->seed();

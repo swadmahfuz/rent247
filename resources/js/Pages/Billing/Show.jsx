@@ -387,7 +387,7 @@ export default function Show({
 
                         <div className="border rounded-md p-3 space-y-2">
                             <div className="font-medium">Electricity bill (building, optional)</div>
-                            <p className="text-xs text-slate-500">Optional archive only — not attached to tenant invoice packages.</p>
+                            <p className="text-xs text-slate-500">Optional archive only — not attached to tenant invoice PDFs.</p>
                             {buildingElectricity ? (
                                 <div className="flex items-center justify-between gap-2">
                                     <a href={buildingElectricity.url} target="_blank" rel="noreferrer" className="text-indigo-600 truncate">{buildingElectricity.original_name}</a>

@@ -2,11 +2,15 @@
 
 namespace App\Services;
 
+use App\Models\BillingPeriodDocument;
 use App\Models\BillingPeriod;
 use App\Models\Invoice;
 use App\Models\Payment;
 use Barryvdh\DomPDF\Facade\Pdf;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Storage;
+use setasign\Fpdi\Fpdi;
+use setasign\Fpdi\PdfParser\StreamReader;
 
 class PdfGenerator
 {
@@ -61,6 +65,54 @@ class PdfGenerator
         ])->setPaper('a4', 'portrait');
     }
 
+    private function attachmentImagePdf(BillingPeriodDocument $doc): \Barryvdh\DomPDF\PDF
+    {
+        $pages = $this->imageAttachmentPages(collect([$doc]));
+
+        return Pdf::loadView('pdf.invoice-attachment', [
+            'page' => $pages[0] ?? ['title' => $this->attachmentTitle($doc), 'data_uri' => ''],
+        ])->setPaper('a4', 'portrait');
+    }
+
+    /**
+     * Invoice PDF with utility bills as extra pages (images embedded; PDF bills appended).
+     * Attachments keep resolve order (water, then each meter bill).
+     */
+    public function invoiceWithAttachments(Invoice $invoice, Collection $attachments): string
+    {
+        $binary = $this->invoice($invoice)->output();
+
+        if ($attachments->isEmpty()) {
+            return $binary;
+        }
+
+        $pdf = new Fpdi();
+        $this->importAllPages($pdf, StreamReader::createByString($binary));
+
+        foreach ($attachments as $doc) {
+            if ($this->isImageDocument($doc)) {
+                $pageBinary = $this->attachmentImagePdf($doc)->output();
+                $this->importAllPages($pdf, StreamReader::createByString($pageBinary));
+                continue;
+            }
+
+            if ($this->isPdfDocument($doc)) {
+                $path = $doc->absolutePath();
+                if (! $path) {
+                    continue;
+                }
+                try {
+                    $this->importAllPages($pdf, $path);
+                } catch (\Throwable) {
+                    // Skip unreadable utility PDFs rather than failing the whole invoice download.
+                    continue;
+                }
+            }
+        }
+
+        return $pdf->Output('S');
+    }
+
     public function summary(BillingPeriod $period): \Barryvdh\DomPDF\PDF
     {
         $period->load([
@@ -95,14 +147,25 @@ class PdfGenerator
         ])->setPaper('a4', 'portrait');
     }
 
-    public function storeInvoice(Invoice $invoice): string
+    public function storeInvoice(Invoice $invoice, ?Collection $attachments = null): string
     {
-        $pdf = $this->invoice($invoice);
+        $contents = $attachments === null
+            ? $this->invoice($invoice)->output()
+            : $this->invoiceWithAttachments($invoice, $attachments);
+
         $path = sprintf('invoices/%d/%s.pdf', $invoice->property_id, $invoice->number ?: $invoice->id);
-        Storage::disk('local')->put($path, $pdf->output());
+        Storage::disk('local')->put($path, $contents);
         $invoice->update(['pdf_path' => $path]);
 
         return $path;
+    }
+
+    public function pageCount(string $pdfBinary): int
+    {
+        $pdf = new Fpdi();
+        $pageCount = $pdf->setSourceFile(StreamReader::createByString($pdfBinary));
+
+        return (int) $pageCount;
     }
 
     private function section(string $title, $lines, string $currency): array
@@ -133,5 +196,94 @@ class PdfGenerator
         }
 
         return 'data:'.$mime.';base64,'.base64_encode($contents);
+    }
+
+    /**
+     * @param  Collection<int, BillingPeriodDocument>  $attachments
+     * @return list<array{title: string, data_uri: string}>
+     */
+    private function imageAttachmentPages(Collection $attachments): array
+    {
+        $pages = [];
+
+        foreach ($attachments as $doc) {
+            if (! $this->isImageDocument($doc)) {
+                continue;
+            }
+
+            $absolute = $doc->absolutePath();
+            if (! $absolute) {
+                continue;
+            }
+
+            $contents = file_get_contents($absolute);
+            if ($contents === false) {
+                continue;
+            }
+
+            $mime = $doc->mime ?: (mime_content_type($absolute) ?: 'image/jpeg');
+            if (! str_starts_with($mime, 'image/')) {
+                $ext = strtolower(pathinfo($doc->original_name, PATHINFO_EXTENSION));
+                $mime = match ($ext) {
+                    'png' => 'image/png',
+                    'jpg', 'jpeg' => 'image/jpeg',
+                    default => 'image/jpeg',
+                };
+            }
+
+            $pages[] = [
+                'title' => $this->attachmentTitle($doc),
+                'data_uri' => 'data:'.$mime.';base64,'.base64_encode($contents),
+            ];
+        }
+
+        return $pages;
+    }
+
+    private function attachmentTitle(BillingPeriodDocument $doc): string
+    {
+        if ($doc->kind === 'water') {
+            return 'Water Bill';
+        }
+
+        $title = 'Electricity Bill';
+        if ($meter = $doc->meterNumber()) {
+            $title .= ' · Meter '.$meter;
+        }
+
+        return $title;
+    }
+
+    private function isImageDocument(BillingPeriodDocument $doc): bool
+    {
+        $mime = strtolower((string) $doc->mime);
+        if (str_starts_with($mime, 'image/')) {
+            return true;
+        }
+
+        $ext = strtolower(pathinfo($doc->original_name ?: '', PATHINFO_EXTENSION));
+
+        return in_array($ext, ['jpg', 'jpeg', 'png'], true);
+    }
+
+    private function isPdfDocument(BillingPeriodDocument $doc): bool
+    {
+        $mime = strtolower((string) $doc->mime);
+        if ($mime === 'application/pdf') {
+            return true;
+        }
+
+        return strtolower(pathinfo($doc->original_name ?: '', PATHINFO_EXTENSION)) === 'pdf';
+    }
+
+    private function importAllPages(Fpdi $pdf, $source): void
+    {
+        $pageCount = $pdf->setSourceFile($source);
+        for ($page = 1; $page <= $pageCount; $page++) {
+            $template = $pdf->importPage($page);
+            $size = $pdf->getTemplateSize($template);
+            $pdf->AddPage($size['orientation'], [$size['width'], $size['height']]);
+            $pdf->useTemplate($template);
+        }
     }
 }

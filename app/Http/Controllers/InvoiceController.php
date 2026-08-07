@@ -11,6 +11,7 @@ use App\Services\InvoicePacketBuilder;
 use App\Services\PdfGenerator;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Storage;
 use Inertia\Inertia;
 use Symfony\Component\HttpFoundation\Response;
 
@@ -113,7 +114,7 @@ class InvoiceController extends Controller
         return $packetBuilder->downloadResponse($invoice);
     }
 
-    public function email(Request $request, Invoice $invoice, PdfGenerator $pdfGenerator)
+    public function email(Request $request, Invoice $invoice, InvoicePacketBuilder $packetBuilder)
     {
         $property = $request->attributes->get('currentProperty');
         abort_unless($property && $invoice->property_id === $property->id, 403);
@@ -123,7 +124,10 @@ class InvoiceController extends Controller
         abort_unless($email, 422, 'Tenant has no email address.');
 
         try {
-            $path = $pdfGenerator->storeInvoice($invoice);
+            $packet = $packetBuilder->build($invoice);
+            $path = sprintf('invoices/%d/%s.pdf', $invoice->property_id, $invoice->number ?: $invoice->id);
+            Storage::disk('local')->put($path, $packet['contents']);
+            $invoice->update(['pdf_path' => $path]);
             Mail::to($email)->send(new InvoiceMail($invoice, $path));
             MailLog::create([
                 'invoice_id' => $invoice->id,

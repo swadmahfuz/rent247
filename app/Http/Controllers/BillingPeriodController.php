@@ -308,15 +308,7 @@ class BillingPeriodController extends Controller
 
         foreach ($billing->invoices as $invoice) {
             $packet = $packetBuilder->build($invoice);
-            $folder = $packet['base'];
-
-            if ($packet['is_zip']) {
-                foreach ($packet['files'] as $file) {
-                    $zip->addFromString($folder.'/'.$file['name'], $file['contents']);
-                }
-            } else {
-                $zip->addFromString($folder.'.pdf', $packet['files'][0]['contents']);
-            }
+            $zip->addFromString($packet['base'].'.pdf', $packet['contents']);
         }
 
         $zip->close();
