@@ -54,7 +54,7 @@
         <tbody>
             @foreach ($period->meterInputs as $input)
                 <tr>
-                    <td>{{ $input->meter->name ?? '' }} ({{ $input->meter->code ?? '' }})</td>
+                    <td>{{ $input->meter->name ?? '' }}@if($input->meter?->code) · meter {{ $input->meter->code }}@endif</td>
                     <td>{{ $input->meter->kind ?? '' }}</td>
                     <td class="num">{{ number_format((float)$input->amount, 2) }}</td>
                 </tr>

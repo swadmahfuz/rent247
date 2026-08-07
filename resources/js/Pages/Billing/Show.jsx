@@ -237,7 +237,7 @@ export default function Show({
                         <div className="space-y-2">
                             {meters.map((m, idx) => (
                                 <div key={m.id} className="grid md:grid-cols-4 gap-2 items-center text-sm">
-                                    <div className="font-medium">{m.name} <span className="text-slate-400">({m.kind}{m.code ? ` #${m.code}` : ''})</span></div>
+                                    <div className="font-medium">{m.name} <span className="text-slate-400">({m.kind}{m.code ? ` · meter ${m.code}` : ''})</span></div>
                                     <input type="number" step="0.01" className="rounded border-slate-300" placeholder="Amount" value={data.meter_inputs[idx]?.amount ?? ''} onChange={(e) => updateMeter(idx, 'amount', e.target.value)} />
                                     <input type="date" className="rounded border-slate-300" value={data.meter_inputs[idx]?.service_period ?? ''} onChange={(e) => updateMeter(idx, 'service_period', e.target.value)} />
                                 </div>
