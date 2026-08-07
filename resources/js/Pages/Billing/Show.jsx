@@ -1,10 +1,41 @@
 import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout';
 import { Head, Link, router, useForm } from '@inertiajs/react';
 import { useMemo, useState } from 'react';
+import { compressImageForUpload, MAX_BILL_PHOTO_BYTES } from '@/utils/compressImage';
 
 const money = (n) => Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 function BillFilePickers({ inputKey = 'file', onFile }) {
+    const [busy, setBusy] = useState(false);
+    const [status, setStatus] = useState('');
+
+    const handlePick = async (raw) => {
+        if (!raw) {
+            setStatus('');
+            onFile(null);
+            return;
+        }
+
+        setBusy(true);
+        setStatus('Preparing photo…');
+        try {
+            const file = await compressImageForUpload(raw);
+            if (file.size > MAX_BILL_PHOTO_BYTES) {
+                setStatus('Photo is still over 5 MB; try a closer shot or fewer meters at once.');
+            } else if (file.size < raw.size) {
+                setStatus('Photo ready (compressed under 5 MB)');
+            } else {
+                setStatus('File ready');
+            }
+            onFile(file);
+        } catch {
+            setStatus('Could not prepare photo; try Choose file or a smaller image.');
+            onFile(null);
+        } finally {
+            setBusy(false);
+        }
+    };
+
     return (
         <div className="flex flex-wrap gap-3 items-end">
             <div>
@@ -14,7 +45,8 @@ function BillFilePickers({ inputKey = 'file', onFile }) {
                     type="file"
                     accept="image/*"
                     capture="environment"
-                    onChange={(e) => onFile(e.target.files?.[0] || null)}
+                    disabled={busy}
+                    onChange={(e) => handlePick(e.target.files?.[0] || null)}
                 />
             </div>
             <div>
@@ -23,9 +55,11 @@ function BillFilePickers({ inputKey = 'file', onFile }) {
                     key={`file-${inputKey}`}
                     type="file"
                     accept=".pdf,.jpg,.jpeg,.png,image/jpeg,image/png"
-                    onChange={(e) => onFile(e.target.files?.[0] || null)}
+                    disabled={busy}
+                    onChange={(e) => handlePick(e.target.files?.[0] || null)}
                 />
             </div>
+            {status && <p className="basis-full text-xs text-slate-500">{busy ? 'Preparing…' : status}</p>}
         </div>
     );
 }
@@ -265,6 +299,7 @@ export default function Show({
                         <p className="text-xs text-slate-500 mt-1">
                             All uploads are optional and can be added or replaced later. Supported formats: PDF, JPG/JPEG, and PNG.
                             On a phone, use Take photo to capture a bill with the camera, or Choose file for an existing file/PDF.
+                            Large camera photos are compressed automatically before upload (under 5 MB per file).
                         </p>
                     </div>
 
