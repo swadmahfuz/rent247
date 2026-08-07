@@ -4,6 +4,20 @@ import { useMemo, useState } from 'react';
 
 const money = (n) => Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
+/** Last calendar day of the month before the billing period (YYYY-MM-DD). */
+function defaultMeterServicePeriod(period) {
+    const year = Number(period?.year);
+    const month = Number(period?.month);
+    if (!year || !month) return '';
+
+    // Day 0 of the billing month = last day of previous month.
+    const lastDay = new Date(year, month - 1, 0);
+    const y = lastDay.getFullYear();
+    const m = String(lastDay.getMonth() + 1).padStart(2, '0');
+    const d = String(lastDay.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+}
+
 export default function Show({
     auth,
     period,
@@ -24,12 +38,16 @@ export default function Show({
         return map;
     }, [period]);
 
+    const defaultServicePeriod = useMemo(() => defaultMeterServicePeriod(period), [period]);
+
     const { data, setData, put, processing } = useForm({
         bill_date: period.bill_date ? String(period.bill_date).slice(0, 10) : '',
         meter_inputs: meters.map((m) => ({
             meter_id: m.id,
             amount: meterMap[m.id]?.amount ?? '',
-            service_period: meterMap[m.id]?.service_period ? String(meterMap[m.id].service_period).slice(0, 10) : '',
+            service_period: meterMap[m.id]?.service_period
+                ? String(meterMap[m.id].service_period).slice(0, 10)
+                : defaultServicePeriod,
         })),
         charge_inputs: buildChargeInputs(period, chargeTypes, leases),
     });
@@ -152,7 +170,10 @@ export default function Show({
                     </div>
 
                     <div className="bg-white rounded-lg shadow-sm p-4">
-                        <h3 className="font-semibold mb-3">Electricity meter amounts</h3>
+                        <h3 className="font-semibold mb-1">Electricity meter amounts</h3>
+                        <p className="text-xs text-slate-500 mb-3">
+                            Service date defaults to the last day of the previous month ({defaultServicePeriod || '—'}). Change any row if needed.
+                        </p>
                         <div className="space-y-2">
                             {meters.map((m, idx) => (
                                 <div key={m.id} className="grid md:grid-cols-4 gap-2 items-center text-sm">
