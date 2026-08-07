@@ -50,6 +50,7 @@ class HandleInertiaRequests extends Middleware
                 'success' => fn () => $request->session()->get('success'),
                 'error' => fn () => $request->session()->get('error'),
             ],
+            'importResult' => fn () => $request->session()->get('import_result'),
             'properties' => $properties,
             'currentProperty' => $currentProperty,
             'assetBase' => rtrim((string) (config('app.asset_url') ?: url('/')), '/'),

@@ -6,6 +6,7 @@ import { Link, router, usePage } from '@inertiajs/react';
 const primaryLinks = [
     { href: 'dashboard', label: 'Dashboard' },
     { href: 'billing.index', label: 'Billing' },
+    { href: 'import.index', label: 'Import history' },
     { href: 'invoices.index', label: 'Invoices' },
     { href: 'payments.index', label: 'Payments' },
 ];

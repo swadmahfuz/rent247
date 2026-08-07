@@ -4,6 +4,7 @@ use App\Http\Controllers\AnalyticsController;
 use App\Http\Controllers\BillingPeriodController;
 use App\Http\Controllers\ChargeTypeController;
 use App\Http\Controllers\DashboardController;
+use App\Http\Controllers\HistoricalImportController;
 use App\Http\Controllers\InvoiceController;
 use App\Http\Controllers\LeaseController;
 use App\Http\Controllers\MeterController;
@@ -56,6 +57,10 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::post('/billing/{billing}/documents', [BillingPeriodController::class, 'storeDocument'])->name('billing.documents.store');
     Route::post('/billing/{billing}/unit-electricity-documents', [BillingPeriodController::class, 'storeUnitElectricityDocuments'])->name('billing.documents.unit-electricity.store');
     Route::delete('/billing/{billing}/documents/{document}', [BillingPeriodController::class, 'destroyDocument'])->name('billing.documents.destroy');
+
+    Route::get('/import', [HistoricalImportController::class, 'index'])->name('import.index');
+    Route::get('/import/template', [HistoricalImportController::class, 'template'])->name('import.template');
+    Route::post('/import', [HistoricalImportController::class, 'store'])->name('import.store');
 
     Route::get('/invoices', [InvoiceController::class, 'index'])->name('invoices.index');
     Route::get('/invoices/{invoice}', [InvoiceController::class, 'show'])->name('invoices.show');

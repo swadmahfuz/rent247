@@ -12,6 +12,7 @@
         "laravel/framework": "^10.0",
         "laravel/sanctum": "^3.2",
         "laravel/tinker": "^2.8",
+        "phpoffice/phpspreadsheet": "^5.8",
         "setasign/fpdf": "^1.9",
         "setasign/fpdi": "^2.6",
         "tightenco/ziggy": "^2.0"
