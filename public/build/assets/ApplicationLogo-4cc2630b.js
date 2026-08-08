@@ -1,1 +1,0 @@
-import{X as n,j as a}from"./app-a8db9869.js";function p({className:o="",...s}){const{assetBase:t=""}=n().props;return a.jsx("img",{...s,src:`${t}/images/app-icon.png`,alt:"Rent247",className:`rounded-lg object-contain ${o}`})}export{p as A};

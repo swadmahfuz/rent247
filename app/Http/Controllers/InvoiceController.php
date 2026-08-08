@@ -3,12 +3,13 @@
 namespace App\Http\Controllers;
 
 use App\Mail\InvoiceMail;
+use App\Models\BillingPeriod;
 use App\Models\Invoice;
 use App\Models\InvoiceLine;
 use App\Models\MailLog;
+use App\Models\Unit;
 use App\Services\BillingCalculator;
 use App\Services\InvoicePacketBuilder;
-use App\Services\PdfGenerator;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Storage;
@@ -22,13 +23,36 @@ class InvoiceController extends Controller
         $property = $request->attributes->get('currentProperty');
         abort_unless($property, 404);
 
-        $query = Invoice::with(['lease.tenant', 'lease.unit', 'billingPeriod.documents'])
-            ->where('property_id', $property->id)
-            ->latest('id');
+        $status = $request->string('status')->toString();
+        $periodId = $request->integer('billing_period_id') ?: null;
+        $unitId = $request->integer('unit_id') ?: null;
 
-        if ($status = $request->string('status')->toString()) {
-            $query->where('status', $status);
+        $query = Invoice::query()
+            ->select('invoices.*')
+            ->join('billing_periods', 'billing_periods.id', '=', 'invoices.billing_period_id')
+            ->with(['lease.tenant', 'lease.unit', 'billingPeriod.documents'])
+            ->where('invoices.property_id', $property->id);
+
+        if ($status === 'outstanding') {
+            $query->whereIn('invoices.status', ['issued', 'partial']);
+        } elseif ($status !== '') {
+            $query->where('invoices.status', $status);
         }
+
+        if ($periodId) {
+            $query->where('invoices.billing_period_id', $periodId);
+        }
+
+        if ($unitId) {
+            $query->whereHas('lease', fn ($q) => $q->where('unit_id', $unitId));
+        }
+
+        // Outstanding first (by remaining balance), then newest period, then id.
+        $query->orderByRaw('CASE WHEN invoices.status IN (\'issued\', \'partial\') THEN 0 WHEN invoices.status = \'draft\' THEN 1 ELSE 2 END')
+            ->orderByRaw('(invoices.total_amount - invoices.paid_amount) DESC')
+            ->orderByDesc('billing_periods.year')
+            ->orderByDesc('billing_periods.month')
+            ->orderByDesc('invoices.id');
 
         $items = $query->paginate(30)->withQueryString();
         $packet = app(InvoicePacketBuilder::class);
@@ -40,7 +64,20 @@ class InvoiceController extends Controller
 
         return Inertia::render('Invoices/Index', [
             'items' => $items,
-            'filters' => ['status' => $status],
+            'filters' => [
+                'status' => $status,
+                'billing_period_id' => $periodId,
+                'unit_id' => $unitId,
+            ],
+            'filterOptions' => [
+                'periods' => BillingPeriod::where('property_id', $property->id)
+                    ->orderByDesc('year')
+                    ->orderByDesc('month')
+                    ->get(['id', 'year', 'month']),
+                'units' => Unit::where('property_id', $property->id)
+                    ->orderBy('label')
+                    ->get(['id', 'label']),
+            ],
         ]);
     }
 
@@ -119,9 +156,12 @@ class InvoiceController extends Controller
         $property = $request->attributes->get('currentProperty');
         abort_unless($property && $invoice->property_id === $property->id, 403);
 
-        $invoice->load('lease.tenant');
-        $email = $invoice->lease->tenant->email;
-        abort_unless($email, 422, 'Tenant has no email address.');
+        $invoice->load(['lease.tenant', 'property', 'billingPeriod']);
+        $email = $invoice->lease?->tenant?->email;
+
+        if (! $email) {
+            return back()->with('error', 'Tenant has no email address. Add one on the Tenants page, then try again.');
+        }
 
         try {
             $packet = $packetBuilder->build($invoice);
@@ -135,7 +175,11 @@ class InvoiceController extends Controller
                 'status' => 'sent',
             ]);
 
-            return back()->with('success', 'Invoice emailed to '.$email);
+            $extra = $packet['has_attachments']
+                ? ' (PDF includes utility bill pages)'
+                : (count($packet['missing']) ? ' (PDF sent; some utility bills were missing)' : '');
+
+            return back()->with('success', 'Invoice emailed to '.$email.$extra.'.');
         } catch (\Throwable $e) {
             MailLog::create([
                 'invoice_id' => $invoice->id,

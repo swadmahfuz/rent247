@@ -1,11 +1,14 @@
 import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout';
 import { Head, router, useForm } from '@inertiajs/react';
+import { useEffect, useState } from 'react';
 
 const money = (n) => Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 export default function Show({ auth, invoice, amountInWords, attachmentStatus }) {
     const balance = Number(invoice.balance ?? (invoice.total_amount - invoice.paid_amount));
     const canPay = ['issued', 'partial', 'draft'].includes(invoice.status) && balance > 0.009;
+    const tenantEmail = invoice.lease?.tenant?.email;
+    const [emailing, setEmailing] = useState(false);
 
     const { data, setData, post, processing, reset, errors } = useForm({
         invoice_id: invoice.id,
@@ -15,11 +18,28 @@ export default function Show({ auth, invoice, amountInWords, attachmentStatus })
         note: '',
     });
 
+    useEffect(() => {
+        const next = Number(invoice.balance ?? (invoice.total_amount - invoice.paid_amount));
+        setData('invoice_id', invoice.id);
+        setData('amount', next > 0.009 ? next.toFixed(2) : '');
+    }, [invoice.id, invoice.paid_amount, invoice.total_amount, invoice.status]);
+
     const submitPayment = (e) => {
         e.preventDefault();
         post(route('payments.store'), {
             onSuccess: () => reset('note'),
             preserveScroll: true,
+        });
+    };
+
+    const sendEmail = () => {
+        if (!tenantEmail) {
+            return;
+        }
+        setEmailing(true);
+        router.post(route('invoices.email', invoice.id), {}, {
+            preserveScroll: true,
+            onFinish: () => setEmailing(false),
         });
     };
 
@@ -31,12 +51,28 @@ export default function Show({ auth, invoice, amountInWords, attachmentStatus })
                     <a href={route('invoices.pdf', invoice.id)} className="bg-indigo-600 text-white px-4 py-2 rounded-md text-sm">
                         {attachmentStatus?.label || 'Download PDF'}
                     </a>
-                    <button onClick={() => router.post(route('invoices.issue', invoice.id))} className="bg-emerald-600 text-white px-4 py-2 rounded-md text-sm">Issue</button>
+                    <button
+                        type="button"
+                        onClick={sendEmail}
+                        disabled={emailing || !tenantEmail}
+                        className="bg-sky-600 text-white px-4 py-2 rounded-md text-sm disabled:opacity-50"
+                        title={tenantEmail ? `Email to ${tenantEmail}` : 'Add a tenant email first'}
+                    >
+                        {emailing ? 'Sending…' : tenantEmail ? `Email to ${tenantEmail}` : 'Email (no address)'}
+                    </button>
+                    <button type="button" onClick={() => router.post(route('invoices.issue', invoice.id))} className="bg-emerald-600 text-white px-4 py-2 rounded-md text-sm">
+                        Issue
+                    </button>
                 </div>
+                {!tenantEmail && (
+                    <div className="text-sm text-slate-700 bg-slate-50 border border-slate-200 rounded-md px-3 py-2">
+                        This tenant has no email address, so invoice email is disabled until you add one.
+                    </div>
+                )}
                 {attachmentStatus?.missing?.length > 0 && (
                     <div className="text-sm text-amber-700 bg-amber-50 border border-amber-100 rounded-md px-3 py-2">
                         This lease needs utility bill copies, but these are missing for the period: {attachmentStatus.missing.join(', ')}.
-                        Upload them on the billing period page. The invoice PDF will still download.
+                        Upload them on the billing period page. Download and email will still send the invoice PDF.
                     </div>
                 )}
 
@@ -74,18 +110,32 @@ export default function Show({ auth, invoice, amountInWords, attachmentStatus })
                 </div>
 
                 {canPay && (
-                    <form onSubmit={submitPayment} className="bg-white rounded-lg shadow-sm p-6 space-y-3">
-                        <h3 className="font-semibold text-slate-800">Record payment</h3>
+                    <form id="payment" onSubmit={submitPayment} className="bg-white rounded-lg shadow-sm p-6 space-y-3 border border-indigo-100">
+                        <div className="flex flex-wrap items-baseline justify-between gap-2">
+                            <h3 className="font-semibold text-slate-800">Record payment</h3>
+                            <span className="text-sm text-amber-700">Due {money(balance)}</span>
+                        </div>
                         <div className="grid md:grid-cols-4 gap-2">
-                            <input type="number" step="0.01" className="rounded border-slate-300" value={data.amount} onChange={(e) => setData('amount', e.target.value)} />
-                            <input type="date" className="rounded border-slate-300" value={data.paid_on} onChange={(e) => setData('paid_on', e.target.value)} />
-                            <select className="rounded border-slate-300" value={data.method} onChange={(e) => setData('method', e.target.value)}>
-                                <option value="cash">Cash</option>
-                                <option value="bank">Bank</option>
-                                <option value="cheque">Cheque</option>
-                                <option value="other">Other</option>
-                            </select>
-                            <button disabled={processing} className="bg-indigo-600 text-white rounded-md px-4 py-2 text-sm">Save payment</button>
+                            <label className="text-sm space-y-1">
+                                <span className="text-slate-600">Amount</span>
+                                <input type="number" step="0.01" className="w-full rounded border-slate-300" value={data.amount} onChange={(e) => setData('amount', e.target.value)} />
+                            </label>
+                            <label className="text-sm space-y-1">
+                                <span className="text-slate-600">Date</span>
+                                <input type="date" className="w-full rounded border-slate-300" value={data.paid_on} onChange={(e) => setData('paid_on', e.target.value)} />
+                            </label>
+                            <label className="text-sm space-y-1">
+                                <span className="text-slate-600">Method</span>
+                                <select className="w-full rounded border-slate-300" value={data.method} onChange={(e) => setData('method', e.target.value)}>
+                                    <option value="cash">Cash</option>
+                                    <option value="bank">Bank</option>
+                                    <option value="cheque">Cheque</option>
+                                    <option value="other">Other</option>
+                                </select>
+                            </label>
+                            <div className="flex items-end">
+                                <button disabled={processing} className="w-full bg-indigo-600 text-white rounded-md px-4 py-2 text-sm">Save payment</button>
+                            </div>
                         </div>
                         <input className="rounded border-slate-300 w-full" placeholder="Note (optional)" value={data.note} onChange={(e) => setData('note', e.target.value)} />
                         {errors.amount && <div className="text-red-600 text-sm">{errors.amount}</div>}
@@ -116,7 +166,7 @@ export default function Show({ auth, invoice, amountInWords, attachmentStatus })
                                     <td className="px-4 py-3">{p.note || '—'}</td>
                                     <td className="px-4 py-3 text-right space-x-3">
                                         <a href={route('payments.receipt', p.id)} className="text-emerald-700">Receipt</a>
-                                        <button onClick={() => router.delete(route('payments.destroy', p.id))} className="text-red-600">Delete</button>
+                                        <button type="button" onClick={() => router.delete(route('payments.destroy', p.id))} className="text-red-600">Delete</button>
                                     </td>
                                 </tr>
                             ))}
