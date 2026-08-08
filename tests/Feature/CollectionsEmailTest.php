@@ -202,6 +202,9 @@ class CollectionsEmailTest extends TestCase
         $this->assertNotEmpty($invoice->lease->tenant->portal_url);
         $this->assertStringContainsString($invoice->lease->tenant->portal_url, $html);
         $this->assertStringContainsString('tenant portal', $html);
+
+        $expectedSubject = 'Office Rent '.$invoice->billingPeriod->label.' — '.$invoice->lease->tenant->name.' — '.$invoice->lease->unit->label;
+        $this->assertSame($expectedSubject, $mailable->envelope()->subject);
     }
 
     public function test_period_bundle_email_requires_finalized_status(): void

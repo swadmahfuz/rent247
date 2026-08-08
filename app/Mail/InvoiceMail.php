@@ -50,12 +50,21 @@ class InvoiceMail extends Mailable
 
     public function envelope(): Envelope
     {
-        $period = $this->periodLabel ?: '';
-        $propertyName = $this->property?->name ?? config('app.name');
+        $period = trim((string) ($this->periodLabel ?: ''));
+        $tenantName = trim((string) ($this->tenant?->name ?: 'Tenant'));
 
-        return new Envelope(
-            subject: trim('Rent Invoice '.$period.' — '.$propertyName),
-        );
+        $subject = $period !== ''
+            ? "Office Rent {$period} — {$tenantName}"
+            : "Office Rent — {$tenantName}";
+
+        if ($this->invoices->count() === 1) {
+            $unit = trim((string) ($this->invoices->first()->lease?->unit?->label ?: ''));
+            if ($unit !== '') {
+                $subject .= " — {$unit}";
+            }
+        }
+
+        return new Envelope(subject: $subject);
     }
 
     public function content(): Content
