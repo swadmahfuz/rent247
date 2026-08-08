@@ -152,11 +152,15 @@ class BillingPeriodController extends Controller
                 ])->values()->all(),
             ]);
 
+        $meters = Meter::where('property_id', $property->id)->where('is_active', true)->orderBy('kind')->orderBy('sort_order')->get();
+        $chargeTypes = ChargeType::where('property_id', $property->id)->where('is_active', true)->orderBy('sort_order')->get();
+        $leases = Lease::with(['tenant', 'unit'])->where('property_id', $property->id)->where('is_active', true)->get();
+
         return Inertia::render('Billing/Show', [
             'period' => $billing,
-            'meters' => Meter::where('property_id', $property->id)->where('is_active', true)->orderBy('kind')->orderBy('sort_order')->get(),
-            'chargeTypes' => ChargeType::where('property_id', $property->id)->where('is_active', true)->orderBy('sort_order')->get(),
-            'leases' => Lease::with(['tenant', 'unit'])->where('property_id', $property->id)->where('is_active', true)->get(),
+            'meters' => $meters,
+            'chargeTypes' => $chargeTypes,
+            'leases' => $leases,
             'units' => Unit::where('property_id', $property->id)->where('is_active', true)->orderBy('sort_order')->get(),
             'electricityUnits' => $electricityUnits,
             'leaseBalances' => $leaseBalances,
@@ -164,7 +168,157 @@ class BillingPeriodController extends Controller
             'documents' => $billing->documents,
             'attachmentNeeds' => $attachmentNeeds,
             'invoiceAttachmentStatus' => $invoiceStatuses,
+            'checklist' => $this->buildChecklist($billing, $meters, $chargeTypes, $leases, $attachmentNeeds),
         ]);
+    }
+
+    /**
+     * Compact monthly close status for the billing period page.
+     *
+     * @param  \Illuminate\Support\Collection<int, Meter>  $meters
+     * @param  \Illuminate\Support\Collection<int, ChargeType>  $chargeTypes
+     * @param  \Illuminate\Support\Collection<int, Lease>  $leases
+     * @param  \Illuminate\Support\Collection<int, array>  $attachmentNeeds
+     * @return array{
+     *   items: list<array<string, mixed>>,
+     *   blockers_generate: list<string>,
+     *   blockers_finalize: list<string>,
+     *   unpaid_count: int,
+     *   invoices_filter: array{status: string, billing_period_id: int}
+     * }
+     */
+    private function buildChecklist(
+        BillingPeriod $billing,
+        $meters,
+        $chargeTypes,
+        $leases,
+        $attachmentNeeds,
+    ): array {
+        $meterInputs = $billing->meterInputs->keyBy('meter_id');
+        $metersFilled = $meters->filter(function (Meter $meter) use ($meterInputs) {
+            $input = $meterInputs->get($meter->id);
+
+            return $input && $input->amount !== null && $input->amount !== '';
+        })->count();
+        $metersTotal = $meters->count();
+        $metersOk = $metersTotal === 0 || $metersFilled === $metersTotal;
+
+        $requiredChargeTypes = $chargeTypes->filter(function (ChargeType $type) {
+            if (! in_array($type->category, ['utility', 'fixed'], true)) {
+                return false;
+            }
+
+            return ! in_array($type->code, ['electricity', 'electricity_common', 'office_rent', 'rent'], true);
+        })->values();
+
+        $buildingChargeInputs = $billing->chargeInputs->whereNull('lease_id')->keyBy('charge_type_id');
+        $chargesFilled = $requiredChargeTypes->filter(function (ChargeType $type) use ($buildingChargeInputs) {
+            $input = $buildingChargeInputs->get($type->id);
+
+            return $input && $input->amount !== null && $input->amount !== '';
+        })->count();
+        $chargesTotal = $requiredChargeTypes->count();
+        $chargesOk = $chargesTotal === 0 || $chargesFilled === $chargesTotal;
+
+        $leasesMissingBills = collect($attachmentNeeds)->filter(fn (array $row) => count($row['missing'] ?? []) > 0)->values();
+        $billsOk = $leasesMissingBills->isEmpty();
+
+        // Match BillingCalculator: skip owner-occupied; skip garages with no rent (no invoice lines).
+        $billableLeases = $leases->filter(function (Lease $lease) {
+            if (! $lease->unit || $lease->unit->type === 'owner_occupied') {
+                return false;
+            }
+
+            if ($lease->unit->type === 'garage' && (float) $lease->rent_amount <= 0.009) {
+                return false;
+            }
+
+            return true;
+        });
+
+        $invoiceLeaseIds = $billing->invoices->pluck('lease_id')->map(fn ($id) => (int) $id)->unique();
+        $invoicesDone = $billableLeases->filter(fn (Lease $lease) => $invoiceLeaseIds->contains((int) $lease->id))->count();
+        $invoicesTotal = $billableLeases->count();
+        $invoicesOk = $invoicesTotal === 0 || $invoicesDone === $invoicesTotal;
+
+        $unpaidInvoices = $billing->invoices->filter(function (Invoice $invoice) {
+            if (! in_array($invoice->status, ['issued', 'partial'], true)) {
+                return false;
+            }
+
+            return (float) $invoice->balance > 0.009;
+        });
+        $unpaidCount = $unpaidInvoices->count();
+
+        $items = [
+            [
+                'key' => 'meters',
+                'label' => 'Meter readings',
+                'ok' => $metersOk,
+                'detail' => $metersTotal === 0
+                    ? 'No active meters'
+                    : "{$metersFilled} / {$metersTotal} filled",
+            ],
+            [
+                'key' => 'charges',
+                'label' => 'Charge inputs',
+                'ok' => $chargesOk,
+                'detail' => $chargesTotal === 0
+                    ? 'No building charges required'
+                    : "{$chargesFilled} / {$chargesTotal} building charges filled",
+            ],
+            [
+                'key' => 'bills',
+                'label' => 'Utility bills',
+                'ok' => $billsOk,
+                'detail' => $billsOk
+                    ? 'All required bill copies uploaded'
+                    : $leasesMissingBills->count().' lease(s) missing bill copies',
+            ],
+            [
+                'key' => 'invoices',
+                'label' => 'Invoices generated',
+                'ok' => $invoicesOk,
+                'detail' => $invoicesTotal === 0
+                    ? 'No active leases'
+                    : "{$invoicesDone} / {$invoicesTotal} leases",
+            ],
+            [
+                'key' => 'unpaid',
+                'label' => 'Outstanding this period',
+                'ok' => $unpaidCount === 0,
+                'detail' => $unpaidCount === 0
+                    ? 'None unpaid'
+                    : "{$unpaidCount} unpaid invoice".($unpaidCount === 1 ? '' : 's'),
+                'count' => $unpaidCount,
+            ],
+        ];
+
+        $blockersGenerate = [];
+        $blockersFinalize = [];
+        foreach ($items as $item) {
+            if ($item['ok']) {
+                continue;
+            }
+            if (in_array($item['key'], ['meters', 'charges'], true)) {
+                $blockersGenerate[] = $item['label'].' incomplete';
+                $blockersFinalize[] = $item['label'].' incomplete';
+            }
+            if (in_array($item['key'], ['bills', 'invoices'], true)) {
+                $blockersFinalize[] = $item['label'].' incomplete';
+            }
+        }
+
+        return [
+            'items' => $items,
+            'blockers_generate' => $blockersGenerate,
+            'blockers_finalize' => $blockersFinalize,
+            'unpaid_count' => $unpaidCount,
+            'invoices_filter' => [
+                'status' => 'outstanding',
+                'billing_period_id' => $billing->id,
+            ],
+        ];
     }
 
     public function updateInputs(Request $request, BillingPeriod $billing)

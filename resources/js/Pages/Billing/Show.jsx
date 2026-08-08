@@ -91,6 +91,7 @@ export default function Show({
     documents = [],
     attachmentNeeds = [],
     invoiceAttachmentStatus = {},
+    checklist = null,
 }) {
     const meterMap = useMemo(() => {
         const map = {};
@@ -196,10 +197,59 @@ export default function Show({
         unitElecForm.setData('files', files);
     };
 
+    const confirmGenerate = () => {
+        const blockers = checklist?.blockers_generate || [];
+        if (blockers.length && !confirm(`Some steps look incomplete:\n• ${blockers.join('\n• ')}\n\nGenerate invoices anyway?`)) {
+            return;
+        }
+        router.post(route('billing.generate', period.id));
+    };
+
+    const confirmFinalize = () => {
+        const blockers = checklist?.blockers_finalize || [];
+        if (blockers.length && !confirm(`Some steps look incomplete:\n• ${blockers.join('\n• ')}\n\nFinalize and issue anyway?`)) {
+            return;
+        }
+        router.post(route('billing.finalize', period.id));
+    };
+
     return (
         <AuthenticatedLayout user={auth.user} header={<h2 className="font-semibold text-xl text-slate-800">{period.label}</h2>}>
             <Head title={period.label} />
             <div className="py-8 max-w-7xl mx-auto sm:px-6 lg:px-8 space-y-6">
+                {checklist?.items?.length > 0 && (
+                    <div className="bg-white rounded-lg shadow-sm p-4 space-y-3">
+                        <div className="flex flex-wrap items-baseline justify-between gap-2">
+                            <h3 className="font-semibold text-slate-800">Monthly checklist</h3>
+                            <span className="text-xs text-slate-500">Review before generate / finalize</span>
+                        </div>
+                        <ul className="grid md:grid-cols-2 gap-2 text-sm">
+                            {checklist.items.map((item) => (
+                                <li
+                                    key={item.key}
+                                    className={`flex items-start gap-2 rounded-md border px-3 py-2 ${item.ok ? 'border-emerald-100 bg-emerald-50/50' : 'border-amber-100 bg-amber-50/60'}`}
+                                >
+                                    <span className={`mt-0.5 font-semibold ${item.ok ? 'text-emerald-700' : 'text-amber-700'}`} aria-hidden>
+                                        {item.ok ? '✓' : '!'}
+                                    </span>
+                                    <div className="min-w-0">
+                                        <div className="font-medium text-slate-800">{item.label}</div>
+                                        <div className="text-slate-600">{item.detail}</div>
+                                        {item.key === 'unpaid' && item.count > 0 && checklist.invoices_filter && (
+                                            <Link
+                                                href={route('invoices.index', checklist.invoices_filter)}
+                                                className="text-indigo-600 text-xs font-medium"
+                                            >
+                                                View outstanding invoices
+                                            </Link>
+                                        )}
+                                    </div>
+                                </li>
+                            ))}
+                        </ul>
+                    </div>
+                )}
+
                 <div className="flex flex-wrap gap-2">
                     <button onClick={save} disabled={processing} className="bg-slate-900 text-white px-4 py-2 rounded-md text-sm">Save inputs</button>
                     {hasPriorPeriod && period.status !== 'finalized' && (
@@ -214,8 +264,8 @@ export default function Show({
                             Copy prior month
                         </button>
                     )}
-                    <button onClick={() => router.post(route('billing.generate', period.id))} className="bg-indigo-600 text-white px-4 py-2 rounded-md text-sm">Generate invoices</button>
-                    <button onClick={() => router.post(route('billing.finalize', period.id))} className="bg-emerald-600 text-white px-4 py-2 rounded-md text-sm">Finalize & issue</button>
+                    <button onClick={confirmGenerate} className="bg-indigo-600 text-white px-4 py-2 rounded-md text-sm">Generate invoices</button>
+                    <button onClick={confirmFinalize} className="bg-emerald-600 text-white px-4 py-2 rounded-md text-sm">Finalize & issue</button>
                     <a href={route('billing.summary-pdf', period.id)} className="bg-white border px-4 py-2 rounded-md text-sm">Summary PDF</a>
                     {(period.invoices || []).length > 0 && (
                         <a href={route('billing.invoices-zip', period.id)} className="bg-white border px-4 py-2 rounded-md text-sm">Download all PDFs (ZIP)</a>
