@@ -28,6 +28,13 @@ ChartJS.register(
 
 const money = (n) => Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
+const formatMom = (pct) => {
+    if (pct === null || pct === undefined) return '—';
+    const n = Number(pct);
+    const sign = n > 0 ? '+' : '';
+    return `${sign}${n.toFixed(1)}%`;
+};
+
 export default function Dashboard({
     auth,
     stats,
@@ -35,8 +42,14 @@ export default function Dashboard({
     byTenant = [],
     outstandingByTenant = [],
     recentPayments = [],
+    consumptionByMonth = [],
+    commonElectricityLastYear = [],
+    unitElectricityLastYear = [],
+    electricityMetersLastYearRange = null,
+    consumptionMom = {},
 }) {
     const monthLabels = profitRows.map((r) => `${r.year}-${String(r.month).padStart(2, '0')}`);
+    const consumptionLabels = consumptionByMonth.map((r) => r.label);
 
     const billedCollected = {
         labels: monthLabels,
@@ -71,6 +84,60 @@ export default function Dashboard({
         ],
     };
 
+    const electricityStacked = {
+        labels: consumptionLabels,
+        datasets: [
+            {
+                label: 'Common meters (BDT)',
+                data: consumptionByMonth.map((r) => r.electricity_common),
+                backgroundColor: '#0ea5e9',
+                stack: 'elec',
+            },
+            {
+                label: 'Unit meters (BDT)',
+                data: consumptionByMonth.map((r) => r.electricity_unit),
+                backgroundColor: '#0369a1',
+                stack: 'elec',
+            },
+        ],
+    };
+
+    const waterTrend = {
+        labels: consumptionLabels,
+        datasets: [
+            {
+                label: 'Water bill (BDT)',
+                data: consumptionByMonth.map((r) => r.water),
+                borderColor: '#0891b2',
+                backgroundColor: 'rgba(8, 145, 178, 0.2)',
+                tension: 0.25,
+                fill: true,
+            },
+        ],
+    };
+
+    const commonElectricityChart = {
+        labels: commonElectricityLastYear.map((r) => r.label),
+        datasets: [
+            {
+                label: 'Common meter bills last 12 months (BDT)',
+                data: commonElectricityLastYear.map((r) => r.amount),
+                backgroundColor: '#0ea5e9',
+            },
+        ],
+    };
+
+    const unitElectricityChart = {
+        labels: unitElectricityLastYear.map((r) => r.label),
+        datasets: [
+            {
+                label: 'Unit meter bills last 12 months (BDT)',
+                data: unitElectricityLastYear.map((r) => r.amount),
+                backgroundColor: '#0369a1',
+            },
+        ],
+    };
+
     const chartOptions = {
         responsive: true,
         maintainAspectRatio: false,
@@ -83,6 +150,44 @@ export default function Dashboard({
             },
         },
     };
+
+    const stackedOptions = {
+        ...chartOptions,
+        scales: {
+            x: { stacked: true },
+            y: {
+                stacked: true,
+                ticks: {
+                    callback: (v) => Number(v).toLocaleString(),
+                },
+            },
+        },
+    };
+
+    const horizontalOptions = {
+        ...chartOptions,
+        indexAxis: 'y',
+        plugins: { legend: { display: false } },
+        scales: {
+            x: {
+                ticks: {
+                    callback: (v) => Number(v).toLocaleString(),
+                },
+            },
+        },
+    };
+
+    const hasConsumption = consumptionByMonth.length > 0;
+    const elecMomClass = Number(consumptionMom.electricity_mom_pct) > 0
+        ? 'text-amber-700'
+        : Number(consumptionMom.electricity_mom_pct) < 0
+            ? 'text-emerald-700'
+            : 'text-slate-700';
+    const waterMomClass = Number(consumptionMom.water_mom_pct) > 0
+        ? 'text-amber-700'
+        : Number(consumptionMom.water_mom_pct) < 0
+            ? 'text-emerald-700'
+            : 'text-slate-700';
 
     return (
         <AuthenticatedLayout
@@ -131,16 +236,97 @@ export default function Dashboard({
                         </div>
                     </div>
 
+                    <div className="bg-white rounded-lg shadow-sm p-5 space-y-4">
+                        <div className="flex flex-wrap items-baseline justify-between gap-2">
+                            <div>
+                                <h3 className="font-semibold text-slate-800">Consumption (bill amounts)</h3>
+                                <p className="text-xs text-slate-500 mt-0.5">
+                                    Uses electricity meter bills and the water bill you enter each period (BDT), as a proxy for consumption—not kWh.
+                                </p>
+                            </div>
+                            {hasConsumption && consumptionMom.label && (
+                                <div className="flex flex-wrap gap-2 text-sm">
+                                    <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-1.5">
+                                        <span className="text-slate-500">Electricity vs prior · {consumptionMom.label}: </span>
+                                        <span className={`font-semibold ${elecMomClass}`}>{formatMom(consumptionMom.electricity_mom_pct)}</span>
+                                    </div>
+                                    <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-1.5">
+                                        <span className="text-slate-500">Water vs prior · {consumptionMom.label}: </span>
+                                        <span className={`font-semibold ${waterMomClass}`}>{formatMom(consumptionMom.water_mom_pct)}</span>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        {!hasConsumption ? (
+                            <p className="text-sm text-slate-500">No meter or water bill amounts yet. Enter them on a billing period to see trends.</p>
+                        ) : (
+                            <div className="grid lg:grid-cols-2 gap-6">
+                                <div>
+                                    <h4 className="text-sm font-medium text-slate-700 mb-2">Electricity by month</h4>
+                                    <div className="h-64">
+                                        <Bar data={electricityStacked} options={stackedOptions} />
+                                    </div>
+                                </div>
+                                <div>
+                                    <h4 className="text-sm font-medium text-slate-700 mb-2">Water bill by month</h4>
+                                    <div className="h-64">
+                                        <Line data={waterTrend} options={chartOptions} />
+                                    </div>
+                                </div>
+                                <div className="lg:col-span-2 space-y-6">
+                                    <div>
+                                        <h4 className="text-sm font-medium text-slate-700 mb-1">
+                                            Common meters — last 12 months
+                                            {electricityMetersLastYearRange ? ` (${electricityMetersLastYearRange})` : ''}
+                                        </h4>
+                                        <p className="text-xs text-slate-500 mb-2">
+                                            Bill amount per common meter (name and meter number).
+                                        </p>
+                                        <div className="h-72">
+                                            {commonElectricityLastYear.length ? (
+                                                <Bar data={commonElectricityChart} options={horizontalOptions} />
+                                            ) : (
+                                                <p className="text-sm text-slate-500">No common meter bills in the last 12 months.</p>
+                                            )}
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <h4 className="text-sm font-medium text-slate-700 mb-1">
+                                            Unit meters — last 12 months
+                                            {electricityMetersLastYearRange ? ` (${electricityMetersLastYearRange})` : ''}
+                                        </h4>
+                                        <p className="text-xs text-slate-500 mb-2">
+                                            Bill amount per unit meter (unit · meter name · meter number).
+                                        </p>
+                                        <div className="h-96">
+                                            {unitElectricityLastYear.length ? (
+                                                <Bar data={unitElectricityChart} options={horizontalOptions} />
+                                            ) : (
+                                                <p className="text-sm text-slate-500">No unit meter bills in the last 12 months.</p>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+
                     <div className="bg-white rounded-lg shadow-sm overflow-hidden">
-                        <div className="px-4 py-3 font-semibold border-b">Monthly performance</div>
+                        <div className="px-4 py-3 border-b">
+                            <div className="font-semibold text-slate-800">Monthly performance</div>
+                            <p className="text-xs text-slate-500 mt-0.5">
+                                “Electricity bills” is the sum of meter bill amounts. “Billed − electricity” is not full profit (excludes water, fixed costs, etc.).
+                            </p>
+                        </div>
                         <table className="min-w-full text-sm">
                             <thead className="bg-slate-50 text-left">
                                 <tr>
                                     <th className="px-4 py-3">Month</th>
                                     <th className="px-4 py-3">Billed</th>
                                     <th className="px-4 py-3">Collected</th>
-                                    <th className="px-4 py-3">Utility cost</th>
-                                    <th className="px-4 py-3">Profit</th>
+                                    <th className="px-4 py-3">Electricity bills</th>
+                                    <th className="px-4 py-3">Billed − electricity</th>
                                 </tr>
                             </thead>
                             <tbody>
