@@ -157,9 +157,10 @@ class InvoiceController extends Controller
         abort_unless($property && $invoice->property_id === $property->id, 403);
 
         $invoice->load(['lease.tenant', 'property', 'billingPeriod']);
-        $email = $invoice->lease?->tenant?->email;
+        $emails = $invoice->lease?->tenant?->emailAddresses() ?? [];
+        $toList = implode(', ', $emails);
 
-        if (! $email) {
+        if ($emails === []) {
             return back()->with('error', 'Tenant has no email address. Add one on the Tenants page, then try again.');
         }
 
@@ -168,10 +169,10 @@ class InvoiceController extends Controller
             $path = sprintf('invoices/%d/%s.pdf', $invoice->property_id, $invoice->number ?: $invoice->id);
             Storage::disk('local')->put($path, $packet['contents']);
             $invoice->update(['pdf_path' => $path]);
-            Mail::to($email)->send(new InvoiceMail($invoice, $path));
+            Mail::to($emails)->send(InvoiceMail::forSingleInvoice($invoice, $path));
             MailLog::create([
                 'invoice_id' => $invoice->id,
-                'to_email' => $email,
+                'to_email' => $toList,
                 'status' => 'sent',
             ]);
 
@@ -179,11 +180,11 @@ class InvoiceController extends Controller
                 ? ' (PDF includes utility bill pages)'
                 : (count($packet['missing']) ? ' (PDF sent; some utility bills were missing)' : '');
 
-            return back()->with('success', 'Invoice emailed to '.$email.$extra.'.');
+            return back()->with('success', 'Invoice emailed to '.$toList.$extra.'.');
         } catch (\Throwable $e) {
             MailLog::create([
                 'invoice_id' => $invoice->id,
-                'to_email' => $email,
+                'to_email' => $toList,
                 'status' => 'failed',
                 'error' => $e->getMessage(),
             ]);

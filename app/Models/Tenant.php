@@ -19,6 +19,41 @@ class Tenant extends Model
 
     protected $appends = ['portal_url'];
 
+    /**
+     * Parse the stored email field into a unique list of addresses.
+     * Multiple addresses may be stored comma-separated.
+     *
+     * @return list<string>
+     */
+    public function emailAddresses(): array
+    {
+        return self::parseEmailList($this->email);
+    }
+
+    /**
+     * @return list<string>
+     */
+    public static function parseEmailList(?string $value): array
+    {
+        if ($value === null || trim($value) === '') {
+            return [];
+        }
+
+        return collect(explode(',', $value))
+            ->map(fn (string $email) => trim($email))
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+    }
+
+    public static function normalizeEmailList(?string $value): ?string
+    {
+        $emails = self::parseEmailList($value);
+
+        return $emails === [] ? null : implode(', ', $emails);
+    }
+
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
@@ -36,6 +71,19 @@ class Tenant extends Model
         }
 
         return url('/portal/'.$this->portal_token);
+    }
+
+    /**
+     * Ensure the tenant has an active portal link and return it.
+     */
+    public function ensurePortalUrl(): string
+    {
+        if (! $this->portal_enabled || ! $this->portal_token) {
+            $this->enablePortal();
+            $this->refresh();
+        }
+
+        return (string) $this->portal_url;
     }
 
     public function enablePortal(): void

@@ -2,11 +2,13 @@
 
 namespace App\Http\Controllers;
 
+use App\Mail\InvoiceMail;
 use App\Models\BillingPeriod;
 use App\Models\BillingPeriodDocument;
 use App\Models\ChargeType;
 use App\Models\Invoice;
 use App\Models\Lease;
+use App\Models\MailLog;
 use App\Models\Meter;
 use App\Models\PeriodChargeInput;
 use App\Models\PeriodMeterInput;
@@ -14,6 +16,8 @@ use App\Models\Unit;
 use App\Services\BillingCalculator;
 use App\Services\InvoicePacketBuilder;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Storage;
 use Inertia\Inertia;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 use ZipArchive;
@@ -321,6 +325,102 @@ class BillingPeriodController extends Controller
         }, $downloadName, [
             'Content-Type' => 'application/zip',
         ]);
+    }
+
+    public function emailInvoices(Request $request, BillingPeriod $billing, InvoicePacketBuilder $packetBuilder)
+    {
+        $property = $request->attributes->get('currentProperty');
+        abort_unless($property && $billing->property_id === $property->id, 403);
+        abort_unless($billing->status === 'finalized', 422, 'Finalize the period before emailing invoices.');
+
+        $billing->load(['invoices.lease.tenant', 'invoices.lease.unit', 'property']);
+        abort_if($billing->invoices->isEmpty(), 422, 'No invoices to email.');
+
+        $groups = $billing->invoices
+            ->filter(fn (Invoice $invoice) => $invoice->lease?->tenant)
+            ->groupBy(fn (Invoice $invoice) => $invoice->lease->tenant_id);
+
+        $sent = 0;
+        $skipped = 0;
+        $failed = 0;
+
+        foreach ($groups as $tenantInvoices) {
+            /** @var \Illuminate\Support\Collection<int, Invoice> $tenantInvoices */
+            $tenant = $tenantInvoices->first()->lease->tenant;
+            $emails = $tenant->emailAddresses();
+
+            if ($emails === []) {
+                $skipped++;
+                continue;
+            }
+
+            try {
+                $pdfFiles = [];
+                foreach ($tenantInvoices->sortBy(fn (Invoice $invoice) => $invoice->lease?->unit?->label) as $invoice) {
+                    $packet = $packetBuilder->build($invoice);
+                    $path = sprintf('invoices/%d/%s.pdf', $invoice->property_id, $invoice->number ?: $invoice->id);
+                    Storage::disk('local')->put($path, $packet['contents']);
+                    $invoice->update(['pdf_path' => $path]);
+
+                    $unit = $invoice->lease?->unit?->label ?: 'unit';
+                    $pdfFiles[] = [
+                        'path' => $path,
+                        'as' => ($invoice->number ?: $unit).'.pdf',
+                    ];
+                }
+
+                Mail::to($emails)->send(new InvoiceMail(
+                    invoices: $tenantInvoices->values(),
+                    pdfFiles: $pdfFiles,
+                    property: $billing->property ?? $property,
+                    tenant: $tenant,
+                    periodLabel: $billing->label,
+                ));
+
+                $toList = implode(', ', $emails);
+                foreach ($tenantInvoices as $invoice) {
+                    MailLog::create([
+                        'invoice_id' => $invoice->id,
+                        'to_email' => $toList,
+                        'status' => 'sent',
+                    ]);
+                }
+
+                $sent++;
+            } catch (\Throwable $e) {
+                $failed++;
+                $toList = implode(', ', $emails);
+                foreach ($tenantInvoices as $invoice) {
+                    MailLog::create([
+                        'invoice_id' => $invoice->id,
+                        'to_email' => $toList,
+                        'status' => 'failed',
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+        }
+
+        $parts = [];
+        if ($sent > 0) {
+            $parts[] = "emailed {$sent} tenant".($sent === 1 ? '' : 's');
+        }
+        if ($skipped > 0) {
+            $parts[] = "skipped {$skipped} without email";
+        }
+        if ($failed > 0) {
+            $parts[] = "failed {$failed}";
+        }
+
+        $message = $parts === []
+            ? 'No tenant emails were sent.'
+            : 'Period invoices: '.implode('; ', $parts).'.';
+
+        if ($failed > 0) {
+            return back()->with('error', $message);
+        }
+
+        return back()->with('success', $message);
     }
 
     public function storeDocument(Request $request, BillingPeriod $billing)

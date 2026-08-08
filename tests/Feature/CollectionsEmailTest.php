@@ -81,8 +81,8 @@ class CollectionsEmailTest extends TestCase
             ->assertSessionHas('success');
 
         Mail::assertSent(InvoiceMail::class, function (InvoiceMail $mail) use ($invoice) {
-            return $mail->invoice->is($invoice)
-                && $mail->hasTo('tenant@example.com');
+            return $mail->hasTo('tenant@example.com')
+                && $mail->invoices->contains(fn ($row) => $row->is($invoice));
         });
 
         $this->assertDatabaseHas('mail_logs', [
@@ -95,6 +95,65 @@ class CollectionsEmailTest extends TestCase
         $this->assertNotNull($invoice->pdf_path);
         $this->assertTrue(Storage::disk('local')->exists($invoice->pdf_path));
         $this->assertStringStartsWith('%PDF', Storage::disk('local')->get($invoice->pdf_path));
+    }
+
+    public function test_email_sends_to_comma_separated_addresses(): void
+    {
+        Mail::fake();
+        Storage::fake('local');
+        $this->seed();
+
+        $user = User::first();
+        $invoice = Invoice::with('lease.tenant')->first();
+        $invoice->lease->tenant->update([
+            'email' => 'one@example.com, two@example.com',
+        ]);
+
+        $this->actingAs($user)
+            ->from(route('invoices.show', $invoice))
+            ->post(route('invoices.email', $invoice))
+            ->assertRedirect()
+            ->assertSessionHas('success');
+
+        Mail::assertSent(InvoiceMail::class, function (InvoiceMail $mail) {
+            return $mail->hasTo('one@example.com')
+                && $mail->hasTo('two@example.com');
+        });
+
+        $this->assertDatabaseHas('mail_logs', [
+            'invoice_id' => $invoice->id,
+            'to_email' => 'one@example.com, two@example.com',
+            'status' => 'sent',
+        ]);
+    }
+
+    public function test_tenant_accepts_comma_separated_emails(): void
+    {
+        $this->seed();
+        $user = User::first();
+
+        $this->actingAs($user)->post(route('tenants.store'), [
+            'name' => 'Multi Mail Tenant',
+            'email' => ' a@example.com,b@example.com ,a@example.com ',
+            'phone' => null,
+            'notes' => null,
+        ])->assertRedirect();
+
+        $this->assertDatabaseHas('tenants', [
+            'name' => 'Multi Mail Tenant',
+            'email' => 'a@example.com, b@example.com',
+        ]);
+    }
+
+    public function test_tenant_rejects_invalid_address_in_list(): void
+    {
+        $this->seed();
+        $user = User::first();
+
+        $this->actingAs($user)->post(route('tenants.store'), [
+            'name' => 'Bad Mail Tenant',
+            'email' => 'good@example.com, not-an-email',
+        ])->assertSessionHasErrors('email');
     }
 
     public function test_email_without_tenant_address_flashes_error(): void
@@ -124,5 +183,75 @@ class CollectionsEmailTest extends TestCase
 
         $this->assertArrayHasKey('contents', $packet);
         $this->assertStringStartsWith('%PDF', $packet['contents']);
+    }
+
+    public function test_single_invoice_email_body_includes_address_period_and_unit(): void
+    {
+        $this->seed();
+        $invoice = Invoice::with(['lease.tenant', 'lease.unit', 'property', 'billingPeriod'])->first();
+        $mailable = InvoiceMail::forSingleInvoice($invoice, 'invoices/test.pdf');
+        $html = $mailable->render();
+
+        $this->assertStringContainsString($invoice->property->address, $html);
+        $this->assertStringContainsString($invoice->billingPeriod->label, $html);
+        $this->assertStringContainsString($invoice->lease->unit->label, $html);
+        $this->assertStringNotContainsString('for <strong>'.$invoice->property->name.'</strong>', $html);
+
+        $invoice->lease->tenant->refresh();
+        $this->assertTrue((bool) $invoice->lease->tenant->portal_enabled);
+        $this->assertNotEmpty($invoice->lease->tenant->portal_url);
+        $this->assertStringContainsString($invoice->lease->tenant->portal_url, $html);
+        $this->assertStringContainsString('tenant portal', $html);
+    }
+
+    public function test_period_bundle_email_requires_finalized_status(): void
+    {
+        $this->seed();
+        $user = User::first();
+        $period = \App\Models\BillingPeriod::where('year', 2026)->where('month', 8)->firstOrFail();
+        $period->update(['status' => 'draft']);
+
+        $this->actingAs($user)
+            ->post(route('billing.email-invoices', $period))
+            ->assertStatus(422);
+    }
+
+    public function test_period_bundle_emails_same_tenant_with_multiple_attachments(): void
+    {
+        Mail::fake();
+        Storage::fake('local');
+        $this->seed();
+
+        $user = User::first();
+        $period = \App\Models\BillingPeriod::where('year', 2026)->where('month', 8)->firstOrFail();
+        $period->update(['status' => 'finalized']);
+
+        $invoices = Invoice::with('lease.tenant')
+            ->where('billing_period_id', $period->id)
+            ->orderBy('id')
+            ->take(2)
+            ->get();
+        $this->assertCount(2, $invoices);
+
+        $tenant = $invoices[0]->lease->tenant;
+        $tenant->update(['email' => 'bundle@example.com']);
+        $invoices[1]->lease->update(['tenant_id' => $tenant->id]);
+
+        \App\Models\Tenant::where('id', '!=', $tenant->id)->update(['email' => null]);
+
+        $this->actingAs($user)
+            ->from(route('billing.show', $period))
+            ->post(route('billing.email-invoices', $period))
+            ->assertRedirect()
+            ->assertSessionHas('success');
+
+        Mail::assertSentCount(1);
+        Mail::assertSent(InvoiceMail::class, function (InvoiceMail $mail) use ($invoices) {
+            return $mail->hasTo('bundle@example.com')
+                && $mail->invoices->count() === 2
+                && count($mail->pdfFiles) === 2
+                && $mail->invoices->pluck('id')->sort()->values()->all()
+                    === $invoices->pluck('id')->sort()->values()->all();
+        });
     }
 }

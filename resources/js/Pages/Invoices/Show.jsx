@@ -58,15 +58,18 @@ export default function Show({ auth, invoice, amountInWords, attachmentStatus })
                         className="bg-sky-600 text-white px-4 py-2 rounded-md text-sm disabled:opacity-50"
                         title={tenantEmail ? `Email to ${tenantEmail}` : 'Add a tenant email first'}
                     >
-                        {emailing ? 'Sending…' : tenantEmail ? `Email to ${tenantEmail}` : 'Email (no address)'}
+                        {emailing ? 'Sending…' : tenantEmail ? 'Email invoice' : 'Email (no address)'}
                     </button>
                     <button type="button" onClick={() => router.post(route('invoices.issue', invoice.id))} className="bg-emerald-600 text-white px-4 py-2 rounded-md text-sm">
                         Issue
                     </button>
                 </div>
+                {tenantEmail && (
+                    <div className="text-sm text-slate-600">Recipients: {tenantEmail}</div>
+                )}
                 {!tenantEmail && (
                     <div className="text-sm text-slate-700 bg-slate-50 border border-slate-200 rounded-md px-3 py-2">
-                        This tenant has no email address, so invoice email is disabled until you add one.
+                        This tenant has no email address, so invoice email is disabled until you add one on Tenants (comma-separated for multiple).
                     </div>
                 )}
                 {attachmentStatus?.missing?.length > 0 && (

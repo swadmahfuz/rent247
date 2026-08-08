@@ -33,7 +33,14 @@ export default function Index({ auth, items }) {
             <div className="py-8 max-w-7xl mx-auto sm:px-6 lg:px-8 space-y-4">
                 <form onSubmit={submit} className="bg-white p-4 rounded-lg shadow-sm grid md:grid-cols-4 gap-2">
                     <input className="rounded border-slate-300" placeholder="Name" value={data.name} onChange={(e) => setData('name', e.target.value)} />
-                    <input className="rounded border-slate-300" placeholder="Email" value={data.email} onChange={(e) => setData('email', e.target.value)} />
+                    <input
+                        className="rounded border-slate-300"
+                        type="text"
+                        placeholder="Emails (comma-separated)"
+                        title="One or more emails separated by commas"
+                        value={data.email}
+                        onChange={(e) => setData('email', e.target.value)}
+                    />
                     <input className="rounded border-slate-300" placeholder="Phone" value={data.phone} onChange={(e) => setData('phone', e.target.value)} />
                     <button disabled={processing} className="bg-indigo-600 text-white rounded-md px-4 py-2 text-sm">{editing ? 'Update' : 'Add tenant'}</button>
                 </form>

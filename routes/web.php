@@ -54,6 +54,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::post('/billing/{billing}/finalize', [BillingPeriodController::class, 'finalize'])->name('billing.finalize');
     Route::get('/billing/{billing}/summary-pdf', [AnalyticsController::class, 'summaryPdf'])->name('billing.summary-pdf');
     Route::get('/billing/{billing}/invoices-zip', [BillingPeriodController::class, 'invoicesZip'])->name('billing.invoices-zip');
+    Route::post('/billing/{billing}/email-invoices', [BillingPeriodController::class, 'emailInvoices'])->name('billing.email-invoices');
     Route::post('/billing/{billing}/documents', [BillingPeriodController::class, 'storeDocument'])->name('billing.documents.store');
     Route::post('/billing/{billing}/unit-electricity-documents', [BillingPeriodController::class, 'storeUnitElectricityDocuments'])->name('billing.documents.unit-electricity.store');
     Route::delete('/billing/{billing}/documents/{document}', [BillingPeriodController::class, 'destroyDocument'])->name('billing.documents.destroy');

@@ -220,6 +220,19 @@ export default function Show({
                     {(period.invoices || []).length > 0 && (
                         <a href={route('billing.invoices-zip', period.id)} className="bg-white border px-4 py-2 rounded-md text-sm">Download all PDFs (ZIP)</a>
                     )}
+                    {period.status === 'finalized' && (period.invoices || []).length > 0 && (
+                        <button
+                            type="button"
+                            onClick={() => {
+                                if (confirm('Email this period’s invoices to tenants? Tenants with multiple units get one email with each invoice attached. Tenants without an email address are skipped.')) {
+                                    router.post(route('billing.email-invoices', period.id));
+                                }
+                            }}
+                            className="bg-sky-600 text-white px-4 py-2 rounded-md text-sm"
+                        >
+                            Email all tenants
+                        </button>
+                    )}
                 </div>
 
                 <form onSubmit={save} className="space-y-6">

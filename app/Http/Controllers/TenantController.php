@@ -20,12 +20,8 @@ class TenantController extends Controller
 
     public function store(Request $request)
     {
-        $data = $request->validate([
-            'name' => 'required|string|max:255',
-            'email' => 'nullable|email|max:255',
-            'phone' => 'nullable|string|max:50',
-            'notes' => 'nullable|string',
-        ]);
+        $data = $this->validatedTenant($request);
+        $data['email'] = Tenant::normalizeEmailList($data['email'] ?? null);
 
         Tenant::create([...$data, 'user_id' => $request->user()->id]);
 
@@ -36,16 +32,38 @@ class TenantController extends Controller
     {
         abort_unless($tenant->user_id === $request->user()->id, 403);
 
-        $data = $request->validate([
-            'name' => 'required|string|max:255',
-            'email' => 'nullable|email|max:255',
-            'phone' => 'nullable|string|max:50',
-            'notes' => 'nullable|string',
-        ]);
+        $data = $this->validatedTenant($request);
+        $data['email'] = Tenant::normalizeEmailList($data['email'] ?? null);
 
         $tenant->update($data);
 
         return back()->with('success', 'Tenant updated.');
+    }
+
+    /**
+     * @return array{name: string, email?: string|null, phone?: string|null, notes?: string|null}
+     */
+    private function validatedTenant(Request $request): array
+    {
+        return $request->validate([
+            'name' => 'required|string|max:255',
+            'email' => [
+                'nullable',
+                'string',
+                'max:500',
+                function (string $attribute, mixed $value, \Closure $fail): void {
+                    foreach (Tenant::parseEmailList(is_string($value) ? $value : null) as $email) {
+                        if (! filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                            $fail('Enter one or more valid emails separated by commas.');
+
+                            return;
+                        }
+                    }
+                },
+            ],
+            'phone' => 'nullable|string|max:50',
+            'notes' => 'nullable|string',
+        ]);
     }
 
     public function destroy(Request $request, Tenant $tenant)
