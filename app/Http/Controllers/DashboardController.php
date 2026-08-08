@@ -3,10 +3,12 @@
 namespace App\Http\Controllers;
 
 use App\Models\Invoice;
+use App\Models\Meter;
 use App\Models\Payment;
 use App\Models\PeriodChargeInput;
 use App\Models\PeriodMeterInput;
 use App\Models\Property;
+use App\Models\Unit;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
@@ -47,9 +49,18 @@ class DashboardController extends Controller
                 'outstandingByTenant' => [],
                 'recentPayments' => $recentPayments,
                 'consumptionByMonth' => [],
-                'commonElectricityLastYear' => [],
-                'unitElectricityLastYear' => [],
-                'electricityMetersLastYearRange' => null,
+                'unitMeterTrendLastYear' => [
+                    'range' => null,
+                    'labels' => [],
+                    'meters' => [],
+                    'unit_total' => 0,
+                ],
+                'unitBilledLastYear' => [
+                    'range' => null,
+                    'labels' => [],
+                    'units' => [],
+                    'unit_total' => 0,
+                ],
                 'consumptionMom' => [
                     'electricity_mom_pct' => null,
                     'water_mom_pct' => null,
@@ -150,7 +161,8 @@ class DashboardController extends Controller
         $outstanding = round($outstandingByTenant->sum('balance'), 2);
 
         $consumptionByMonth = $this->consumptionByMonth($property->id);
-        $electricityMetersLastYear = $this->electricityMetersLastYear($property->id);
+        $unitMeterTrendLastYear = $this->unitMeterTrendLastYear($property->id);
+        $unitBilledLastYear = $this->unitBilledLastYear($property->id);
         $latest = $consumptionByMonth->last();
 
         return Inertia::render('Dashboard', [
@@ -166,9 +178,8 @@ class DashboardController extends Controller
             'outstandingByTenant' => $outstandingByTenant,
             'recentPayments' => $recentPayments,
             'consumptionByMonth' => $consumptionByMonth->values()->all(),
-            'commonElectricityLastYear' => $electricityMetersLastYear['common'],
-            'unitElectricityLastYear' => $electricityMetersLastYear['unit'],
-            'electricityMetersLastYearRange' => $electricityMetersLastYear['range'],
+            'unitMeterTrendLastYear' => $unitMeterTrendLastYear,
+            'unitBilledLastYear' => $unitBilledLastYear,
             'consumptionMom' => [
                 'electricity_mom_pct' => $latest['electricity_mom_pct'] ?? null,
                 'water_mom_pct' => $latest['water_mom_pct'] ?? null,
@@ -261,16 +272,230 @@ class DashboardController extends Controller
     }
 
     /**
-     * Trailing 12 billing months of electricity bill amounts, one row per meter.
-     * Window ends at the newest period that has meter bills.
+     * Trailing 12 months of bill amounts for each unit meter (for the meter picker chart).
      *
      * @return array{
-     *   common: list<array{meter_id: int, label: string, name: string, code: ?string, amount: float}>,
-     *   unit: list<array{meter_id: int, label: string, name: string, code: ?string, unit: ?string, amount: float}>,
-     *   range: ?string
+     *   range: ?string,
+     *   labels: list<string>,
+     *   meters: list<array{id: int, label: string, amounts: list<float>}>,
+     *   unit_total: float
      * }
      */
-    private function electricityMetersLastYear(int $propertyId): array
+    private function unitMeterTrendLastYear(int $propertyId): array
+    {
+        $window = $this->meterBillingWindow($propertyId);
+        if ($window === null) {
+            return ['range' => null, 'labels' => [], 'meters' => [], 'unit_total' => 0.0];
+        }
+
+        [$start, $end, $startKey, $endKey] = $window;
+
+        $labels = [];
+        $monthKeys = [];
+        $cursor = $start->copy();
+        while ($cursor->lte($end)) {
+            $monthKeys[] = sprintf('%04d-%02d', (int) $cursor->year, (int) $cursor->month);
+            $labels[] = $cursor->format('M Y');
+            $cursor->addMonth();
+        }
+
+        $meters = Meter::query()
+            ->with('unit')
+            ->where('property_id', $propertyId)
+            ->where('kind', 'unit')
+            ->where('is_active', true)
+            ->orderBy('sort_order')
+            ->orderBy('id')
+            ->get();
+
+        if ($meters->isEmpty()) {
+            return [
+                'range' => $start->format('M Y').' – '.$end->format('M Y'),
+                'labels' => $labels,
+                'meters' => [],
+                'unit_total' => 0.0,
+            ];
+        }
+
+        $rows = PeriodMeterInput::query()
+            ->select(
+                'period_meter_inputs.meter_id',
+                'billing_periods.year',
+                'billing_periods.month',
+                DB::raw('SUM(period_meter_inputs.amount) as total')
+            )
+            ->join('billing_periods', 'billing_periods.id', '=', 'period_meter_inputs.billing_period_id')
+            ->where('billing_periods.property_id', $propertyId)
+            ->whereIn('period_meter_inputs.meter_id', $meters->pluck('id'))
+            ->whereRaw('(billing_periods.year * 12 + billing_periods.month) >= ?', [$startKey])
+            ->whereRaw('(billing_periods.year * 12 + billing_periods.month) <= ?', [$endKey])
+            ->groupBy('period_meter_inputs.meter_id', 'billing_periods.year', 'billing_periods.month')
+            ->get();
+
+        $byMeterMonth = [];
+        foreach ($rows as $row) {
+            $key = sprintf('%04d-%02d', (int) $row->year, (int) $row->month);
+            $byMeterMonth[(int) $row->meter_id][$key] = round((float) $row->total, 2);
+        }
+
+        $series = [];
+        $unitTotal = 0.0;
+        foreach ($meters as $meter) {
+            $code = $meter->code ? trim((string) $meter->code) : '';
+            $name = trim((string) $meter->name);
+            $unitLabel = $meter->unit?->label ? trim((string) $meter->unit->label) : null;
+            $parts = array_filter([
+                $unitLabel,
+                $name,
+                $code !== '' ? "({$code})" : null,
+            ]);
+            $label = implode(' · ', $parts) ?: $name;
+
+            $amounts = [];
+            foreach ($monthKeys as $monthKey) {
+                $amount = (float) ($byMeterMonth[$meter->id][$monthKey] ?? 0);
+                $amounts[] = $amount;
+                $unitTotal += $amount;
+            }
+
+            $series[] = [
+                'id' => (int) $meter->id,
+                'label' => $label,
+                'amounts' => $amounts,
+            ];
+        }
+
+        return [
+            'range' => $start->format('M Y').' – '.$end->format('M Y'),
+            'labels' => $labels,
+            'meters' => $series,
+            'unit_total' => round($unitTotal, 2),
+        ];
+    }
+
+    /**
+     * Trailing 12 months of invoice billed amounts per unit (by billing period).
+     *
+     * @return array{
+     *   range: ?string,
+     *   labels: list<string>,
+     *   units: list<array{id: int, label: string, amounts: list<float>}>,
+     *   unit_total: float
+     * }
+     */
+    private function unitBilledLastYear(int $propertyId): array
+    {
+        $window = $this->invoiceBillingWindow($propertyId);
+        if ($window === null) {
+            return ['range' => null, 'labels' => [], 'units' => [], 'unit_total' => 0.0];
+        }
+
+        [$start, $end, $startKey, $endKey] = $window;
+
+        $labels = [];
+        $monthKeys = [];
+        $cursor = $start->copy();
+        while ($cursor->lte($end)) {
+            $monthKeys[] = sprintf('%04d-%02d', (int) $cursor->year, (int) $cursor->month);
+            $labels[] = $cursor->format('M Y');
+            $cursor->addMonth();
+        }
+
+        $units = Unit::query()
+            ->where('property_id', $propertyId)
+            ->where('is_active', true)
+            ->where('type', '!=', 'owner_occupied')
+            ->orderBy('sort_order')
+            ->orderBy('id')
+            ->get();
+
+        if ($units->isEmpty()) {
+            return [
+                'range' => $start->format('M Y').' – '.$end->format('M Y'),
+                'labels' => $labels,
+                'units' => [],
+                'unit_total' => 0.0,
+            ];
+        }
+
+        $rows = Invoice::query()
+            ->select(
+                'units.id as unit_id',
+                'billing_periods.year',
+                'billing_periods.month',
+                DB::raw('SUM(invoices.total_amount) as total')
+            )
+            ->join('billing_periods', 'billing_periods.id', '=', 'invoices.billing_period_id')
+            ->join('leases', 'leases.id', '=', 'invoices.lease_id')
+            ->join('units', 'units.id', '=', 'leases.unit_id')
+            ->where('invoices.property_id', $propertyId)
+            ->whereNotIn('invoices.status', ['void'])
+            ->whereIn('units.id', $units->pluck('id'))
+            ->whereRaw('(billing_periods.year * 12 + billing_periods.month) >= ?', [$startKey])
+            ->whereRaw('(billing_periods.year * 12 + billing_periods.month) <= ?', [$endKey])
+            ->groupBy('units.id', 'billing_periods.year', 'billing_periods.month')
+            ->get();
+
+        $byUnitMonth = [];
+        foreach ($rows as $row) {
+            $key = sprintf('%04d-%02d', (int) $row->year, (int) $row->month);
+            $byUnitMonth[(int) $row->unit_id][$key] = round((float) $row->total, 2);
+        }
+
+        $series = [];
+        $unitTotal = 0.0;
+        foreach ($units as $unit) {
+            $amounts = [];
+            foreach ($monthKeys as $monthKey) {
+                $amount = (float) ($byUnitMonth[$unit->id][$monthKey] ?? 0);
+                $amounts[] = $amount;
+                $unitTotal += $amount;
+            }
+
+            $series[] = [
+                'id' => (int) $unit->id,
+                'label' => trim((string) $unit->label),
+                'amounts' => $amounts,
+            ];
+        }
+
+        return [
+            'range' => $start->format('M Y').' – '.$end->format('M Y'),
+            'labels' => $labels,
+            'units' => $series,
+            'unit_total' => round($unitTotal, 2),
+        ];
+    }
+
+    /**
+     * @return array{0: Carbon, 1: Carbon, 2: int, 3: int}|null
+     */
+    private function invoiceBillingWindow(int $propertyId): ?array
+    {
+        $latest = Invoice::query()
+            ->join('billing_periods', 'billing_periods.id', '=', 'invoices.billing_period_id')
+            ->where('invoices.property_id', $propertyId)
+            ->whereNotIn('invoices.status', ['void'])
+            ->orderByDesc('billing_periods.year')
+            ->orderByDesc('billing_periods.month')
+            ->first(['billing_periods.year', 'billing_periods.month']);
+
+        if (! $latest) {
+            return null;
+        }
+
+        $end = Carbon::create((int) $latest->year, (int) $latest->month, 1)->startOfMonth();
+        $start = $end->copy()->subMonths(11);
+        $startKey = ((int) $start->year * 12) + (int) $start->month;
+        $endKey = ((int) $end->year * 12) + (int) $end->month;
+
+        return [$start, $end, $startKey, $endKey];
+    }
+
+    /**
+     * @return array{0: Carbon, 1: Carbon, 2: int, 3: int}|null
+     */
+    private function meterBillingWindow(int $propertyId): ?array
     {
         $latest = PeriodMeterInput::query()
             ->join('billing_periods', 'billing_periods.id', '=', 'period_meter_inputs.billing_period_id')
@@ -281,7 +506,7 @@ class DashboardController extends Controller
             ->first(['billing_periods.year', 'billing_periods.month']);
 
         if (! $latest) {
-            return ['common' => [], 'unit' => [], 'range' => null];
+            return null;
         }
 
         $end = Carbon::create((int) $latest->year, (int) $latest->month, 1)->startOfMonth();
@@ -289,65 +514,7 @@ class DashboardController extends Controller
         $startKey = ((int) $start->year * 12) + (int) $start->month;
         $endKey = ((int) $end->year * 12) + (int) $end->month;
 
-        $rows = PeriodMeterInput::query()
-            ->select(
-                'meters.id as meter_id',
-                'meters.kind',
-                'meters.name',
-                'meters.code',
-                'units.label as unit_label',
-                DB::raw('SUM(period_meter_inputs.amount) as total')
-            )
-            ->join('billing_periods', 'billing_periods.id', '=', 'period_meter_inputs.billing_period_id')
-            ->join('meters', 'meters.id', '=', 'period_meter_inputs.meter_id')
-            ->leftJoin('units', 'units.id', '=', 'meters.unit_id')
-            ->where('billing_periods.property_id', $propertyId)
-            ->whereRaw('(billing_periods.year * 12 + billing_periods.month) >= ?', [$startKey])
-            ->whereRaw('(billing_periods.year * 12 + billing_periods.month) <= ?', [$endKey])
-            ->groupBy('meters.id', 'meters.kind', 'meters.name', 'meters.code', 'units.label')
-            ->orderByDesc('total')
-            ->get();
-
-        $common = [];
-        $unit = [];
-        foreach ($rows as $row) {
-            $code = $row->code ? trim((string) $row->code) : '';
-            $name = trim((string) $row->name);
-            $amount = round((float) $row->total, 2);
-
-            if ($row->kind === 'common') {
-                $label = $code !== '' ? "{$name} ({$code})" : $name;
-                $common[] = [
-                    'meter_id' => (int) $row->meter_id,
-                    'label' => $label,
-                    'name' => $name,
-                    'code' => $code !== '' ? $code : null,
-                    'amount' => $amount,
-                ];
-            } elseif ($row->kind === 'unit') {
-                $unitLabel = $row->unit_label ? trim((string) $row->unit_label) : null;
-                $parts = array_filter([
-                    $unitLabel,
-                    $name,
-                    $code !== '' ? "({$code})" : null,
-                ]);
-                $label = implode(' · ', $parts) ?: $name;
-                $unit[] = [
-                    'meter_id' => (int) $row->meter_id,
-                    'label' => $label,
-                    'name' => $name,
-                    'code' => $code !== '' ? $code : null,
-                    'unit' => $unitLabel,
-                    'amount' => $amount,
-                ];
-            }
-        }
-
-        return [
-            'common' => $common,
-            'unit' => $unit,
-            'range' => $start->format('M Y').' – '.$end->format('M Y'),
-        ];
+        return [$start, $end, $startKey, $endKey];
     }
 
     private function momPct(float $previous, float $current): ?float

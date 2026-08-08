@@ -1,5 +1,6 @@
 import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout';
 import { Head, Link } from '@inertiajs/react';
+import { useMemo, useState } from 'react';
 import {
     Chart as ChartJS,
     CategoryScale,
@@ -43,11 +44,50 @@ export default function Dashboard({
     outstandingByTenant = [],
     recentPayments = [],
     consumptionByMonth = [],
-    commonElectricityLastYear = [],
-    unitElectricityLastYear = [],
-    electricityMetersLastYearRange = null,
+    unitMeterTrendLastYear = { range: null, labels: [], meters: [], unit_total: 0 },
+    unitBilledLastYear = { range: null, labels: [], units: [], unit_total: 0 },
     consumptionMom = {},
 }) {
+    const unitTrendMeters = unitMeterTrendLastYear?.meters || [];
+    const [selectedUnitMeterId, setSelectedUnitMeterId] = useState(
+        () => unitTrendMeters[0]?.id ?? '',
+    );
+
+    const selectedUnitMeter = useMemo(() => {
+        if (!unitTrendMeters.length) {
+            return null;
+        }
+        return unitTrendMeters.find((m) => String(m.id) === String(selectedUnitMeterId))
+            || unitTrendMeters[0];
+    }, [unitTrendMeters, selectedUnitMeterId]);
+
+    const selectedUnitMeterTotal = useMemo(() => {
+        if (!selectedUnitMeter?.amounts?.length) {
+            return 0;
+        }
+        return selectedUnitMeter.amounts.reduce((sum, amount) => sum + Number(amount || 0), 0);
+    }, [selectedUnitMeter]);
+
+    const billedUnits = unitBilledLastYear?.units || [];
+    const [selectedBilledUnitId, setSelectedBilledUnitId] = useState(
+        () => billedUnits[0]?.id ?? '',
+    );
+
+    const selectedBilledUnit = useMemo(() => {
+        if (!billedUnits.length) {
+            return null;
+        }
+        return billedUnits.find((u) => String(u.id) === String(selectedBilledUnitId))
+            || billedUnits[0];
+    }, [billedUnits, selectedBilledUnitId]);
+
+    const selectedBilledUnitTotal = useMemo(() => {
+        if (!selectedBilledUnit?.amounts?.length) {
+            return 0;
+        }
+        return selectedBilledUnit.amounts.reduce((sum, amount) => sum + Number(amount || 0), 0);
+    }, [selectedBilledUnit]);
+
     const monthLabels = profitRows.map((r) => `${r.year}-${String(r.month).padStart(2, '0')}`);
     const consumptionLabels = consumptionByMonth.map((r) => r.label);
 
@@ -116,24 +156,34 @@ export default function Dashboard({
         ],
     };
 
-    const commonElectricityChart = {
-        labels: commonElectricityLastYear.map((r) => r.label),
+    const unitMeterTrendChart = {
+        labels: unitMeterTrendLastYear?.labels || [],
         datasets: [
             {
-                label: 'Common meter bills last 12 months (BDT)',
-                data: commonElectricityLastYear.map((r) => r.amount),
-                backgroundColor: '#0ea5e9',
+                label: selectedUnitMeter
+                    ? `${selectedUnitMeter.label} (BDT)`
+                    : 'Meter bills (BDT)',
+                data: selectedUnitMeter?.amounts || [],
+                borderColor: '#0369a1',
+                backgroundColor: 'rgba(3, 105, 161, 0.2)',
+                tension: 0.25,
+                fill: true,
             },
         ],
     };
 
-    const unitElectricityChart = {
-        labels: unitElectricityLastYear.map((r) => r.label),
+    const unitBilledChart = {
+        labels: unitBilledLastYear?.labels || [],
         datasets: [
             {
-                label: 'Unit meter bills last 12 months (BDT)',
-                data: unitElectricityLastYear.map((r) => r.amount),
-                backgroundColor: '#0369a1',
+                label: selectedBilledUnit
+                    ? `${selectedBilledUnit.label} billed (BDT)`
+                    : 'Billed (BDT)',
+                data: selectedBilledUnit?.amounts || [],
+                borderColor: '#4f46e5',
+                backgroundColor: 'rgba(79, 70, 229, 0.2)',
+                tension: 0.25,
+                fill: true,
             },
         ],
     };
@@ -157,19 +207,6 @@ export default function Dashboard({
             x: { stacked: true },
             y: {
                 stacked: true,
-                ticks: {
-                    callback: (v) => Number(v).toLocaleString(),
-                },
-            },
-        },
-    };
-
-    const horizontalOptions = {
-        ...chartOptions,
-        indexAxis: 'y',
-        plugins: { legend: { display: false } },
-        scales: {
-            x: {
                 ticks: {
                     callback: (v) => Number(v).toLocaleString(),
                 },
@@ -213,33 +250,61 @@ export default function Dashboard({
                         ))}
                     </div>
 
-                    <div className="grid lg:grid-cols-2 gap-6">
-                        <div className="bg-white rounded-lg shadow-sm p-5">
-                            <h3 className="font-semibold text-slate-800 mb-3">Billed vs collected</h3>
-                            <div className="h-64">
-                                {profitRows.length ? (
-                                    <Line data={billedCollected} options={chartOptions} />
-                                ) : (
-                                    <p className="text-sm text-slate-500">No billing data yet.</p>
+                    <div className="bg-white rounded-lg shadow-sm p-5">
+                        <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3 mb-2">
+                            <div>
+                                <h3 className="font-semibold text-slate-800">
+                                    Floor-wise Billed — monthly trend
+                                    {unitBilledLastYear?.range ? ` (${unitBilledLastYear.range})` : ''}
+                                </h3>
+                                <p className="text-xs text-slate-500 mt-0.5">
+                                    Past 12 months of invoice totals for one unit (by billing period).
+                                </p>
+                            </div>
+                            <div className="flex flex-col sm:flex-row sm:items-end gap-3">
+                                <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-1.5 text-sm">
+                                    <div className="text-xs text-slate-500">All units · 12 mo</div>
+                                    <div className="font-semibold text-slate-800">
+                                        {money(unitBilledLastYear?.unit_total)}
+                                    </div>
+                                </div>
+                                {selectedBilledUnit && (
+                                    <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-1.5 text-sm">
+                                        <div className="text-xs text-slate-500">Selected unit · 12 mo</div>
+                                        <div className="font-semibold text-slate-800">
+                                            {money(selectedBilledUnitTotal)}
+                                        </div>
+                                    </div>
+                                )}
+                                {billedUnits.length > 0 && (
+                                    <label className="text-sm text-slate-600 flex flex-col gap-1 min-w-[14rem]">
+                                        <span className="text-xs text-slate-500">Unit</span>
+                                        <select
+                                            className="rounded border-slate-300 text-sm"
+                                            value={selectedBilledUnit?.id ?? ''}
+                                            onChange={(e) => setSelectedBilledUnitId(e.target.value)}
+                                        >
+                                            {billedUnits.map((u) => (
+                                                <option key={u.id} value={u.id}>{u.label}</option>
+                                            ))}
+                                        </select>
+                                    </label>
                                 )}
                             </div>
                         </div>
-                        <div className="bg-white rounded-lg shadow-sm p-5">
-                            <h3 className="font-semibold text-slate-800 mb-3">Outstanding by tenant</h3>
-                            <div className="h-64">
-                                {outstandingByTenant.length ? (
-                                    <Bar data={outstandingChart} options={chartOptions} />
-                                ) : (
-                                    <p className="text-sm text-slate-500">No outstanding balances.</p>
-                                )}
-                            </div>
+                        <div className="h-72">
+                            {selectedBilledUnit ? (
+                                <Line data={unitBilledChart} options={chartOptions} />
+                            ) : (
+                                <p className="text-sm text-slate-500">No billed amounts in the last 12 months.</p>
+                            )}
                         </div>
                     </div>
 
                     <div className="bg-white rounded-lg shadow-sm p-5 space-y-4">
                         <div className="flex flex-wrap items-baseline justify-between gap-2">
                             <div>
-                                <h3 className="font-semibold text-slate-800">Consumption (bill amounts)</h3>
+                                <h3 className="font-semibold text-slate-800">Overall Consumption Trend (bill amounts)</h3>
                                 <p className="text-xs text-slate-500 mt-0.5">
                                     Uses electricity meter bills and the water bill you enter each period (BDT), as a proxy for consumption—not kWh.
                                 </p>
@@ -274,42 +339,81 @@ export default function Dashboard({
                                         <Line data={waterTrend} options={chartOptions} />
                                     </div>
                                 </div>
-                                <div className="lg:col-span-2 space-y-6">
-                                    <div>
-                                        <h4 className="text-sm font-medium text-slate-700 mb-1">
-                                            Common meters — last 12 months
-                                            {electricityMetersLastYearRange ? ` (${electricityMetersLastYearRange})` : ''}
-                                        </h4>
-                                        <p className="text-xs text-slate-500 mb-2">
-                                            Bill amount per common meter (name and meter number).
-                                        </p>
-                                        <div className="h-72">
-                                            {commonElectricityLastYear.length ? (
-                                                <Bar data={commonElectricityChart} options={horizontalOptions} />
-                                            ) : (
-                                                <p className="text-sm text-slate-500">No common meter bills in the last 12 months.</p>
+                                <div className="lg:col-span-2">
+                                    <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3 mb-2">
+                                        <div>
+                                            <h4 className="text-sm font-medium text-slate-700">
+                                                Electricity Bill — monthly trend
+                                                {unitMeterTrendLastYear?.range ? ` (${unitMeterTrendLastYear.range})` : ''}
+                                            </h4>
+                                            <p className="text-xs text-slate-500 mt-0.5">
+                                                Past 12 months of bill amounts for one unit meter.
+                                            </p>
+                                        </div>
+                                        <div className="flex flex-col sm:flex-row sm:items-end gap-3">
+                                            <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-1.5 text-sm">
+                                                <div className="text-xs text-slate-500">All unit meters · 12 mo</div>
+                                                <div className="font-semibold text-slate-800">
+                                                    {money(unitMeterTrendLastYear?.unit_total)}
+                                                </div>
+                                            </div>
+                                            {selectedUnitMeter && (
+                                                <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-1.5 text-sm">
+                                                    <div className="text-xs text-slate-500">Selected meter · 12 mo</div>
+                                                    <div className="font-semibold text-slate-800">
+                                                        {money(selectedUnitMeterTotal)}
+                                                    </div>
+                                                </div>
+                                            )}
+                                            {unitTrendMeters.length > 0 && (
+                                                <label className="text-sm text-slate-600 flex flex-col gap-1 min-w-[14rem]">
+                                                    <span className="text-xs text-slate-500">Meter</span>
+                                                    <select
+                                                        className="rounded border-slate-300 text-sm"
+                                                        value={selectedUnitMeter?.id ?? ''}
+                                                        onChange={(e) => setSelectedUnitMeterId(e.target.value)}
+                                                    >
+                                                        {unitTrendMeters.map((m) => (
+                                                            <option key={m.id} value={m.id}>{m.label}</option>
+                                                        ))}
+                                                    </select>
+                                                </label>
                                             )}
                                         </div>
                                     </div>
-                                    <div>
-                                        <h4 className="text-sm font-medium text-slate-700 mb-1">
-                                            Unit meters — last 12 months
-                                            {electricityMetersLastYearRange ? ` (${electricityMetersLastYearRange})` : ''}
-                                        </h4>
-                                        <p className="text-xs text-slate-500 mb-2">
-                                            Bill amount per unit meter (unit · meter name · meter number).
-                                        </p>
-                                        <div className="h-96">
-                                            {unitElectricityLastYear.length ? (
-                                                <Bar data={unitElectricityChart} options={horizontalOptions} />
-                                            ) : (
-                                                <p className="text-sm text-slate-500">No unit meter bills in the last 12 months.</p>
-                                            )}
-                                        </div>
+                                    <div className="h-72">
+                                        {selectedUnitMeter ? (
+                                            <Line data={unitMeterTrendChart} options={chartOptions} />
+                                        ) : (
+                                            <p className="text-sm text-slate-500">No unit meters available.</p>
+                                        )}
                                     </div>
                                 </div>
                             </div>
                         )}
+                    </div>
+
+                    <div className="grid lg:grid-cols-2 gap-6">
+                        <div className="bg-white rounded-lg shadow-sm p-5">
+                            <h3 className="font-semibold text-slate-800 mb-3">Billed vs collected</h3>
+                            <div className="h-64">
+                                {profitRows.length ? (
+                                    <Line data={billedCollected} options={chartOptions} />
+                                ) : (
+                                    <p className="text-sm text-slate-500">No billing data yet.</p>
+                                )}
+                            </div>
+                        </div>
+                        <div className="bg-white rounded-lg shadow-sm p-5">
+                            <h3 className="font-semibold text-slate-800 mb-3">Outstanding by tenant</h3>
+                            <div className="h-64">
+                                {outstandingByTenant.length ? (
+                                    <Bar data={outstandingChart} options={chartOptions} />
+                                ) : (
+                                    <p className="text-sm text-slate-500">No outstanding balances.</p>
+                                )}
+                            </div>
+                        </div>
                     </div>
 
                     <div className="bg-white rounded-lg shadow-sm overflow-hidden">

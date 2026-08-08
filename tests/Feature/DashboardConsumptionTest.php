@@ -32,24 +32,39 @@ class DashboardConsumptionTest extends TestCase
                 ->where('consumptionByMonth.0.electricity_unit', fn ($v) => (float) $v === (float) $expectedUnit)
                 ->where('consumptionByMonth.0.electricity_total', fn ($v) => (float) $v === (float) ($expectedCommon + $expectedUnit))
                 ->where('consumptionByMonth.0.water', fn ($v) => (float) $v === $expectedWater)
-                ->has('commonElectricityLastYear', 5)
-                ->has('unitElectricityLastYear', 7)
-                ->where('electricityMetersLastYearRange', 'Sep 2025 – Aug 2026')
+                ->has('unitMeterTrendLastYear.labels', 12)
+                ->has('unitMeterTrendLastYear.meters')
+                ->where('unitMeterTrendLastYear.range', 'Sep 2025 – Aug 2026')
+                ->where('unitMeterTrendLastYear.unit_total', fn ($v) => (float) $v === (float) $expectedUnit)
+                ->has('unitBilledLastYear.labels', 12)
+                ->has('unitBilledLastYear.units')
+                ->where('unitBilledLastYear.range', 'Sep 2025 – Aug 2026')
                 ->has('consumptionMom')
+                ->missing('commonElectricityLastYear')
+                ->missing('unitElectricityLastYear')
+                ->missing('unitCollectionsLastYear')
             );
 
         $props = $this->actingAs($user)->get(route('dashboard'))->original->getData()['page']['props'];
 
-        $main = collect($props['commonElectricityLastYear'])->firstWhere('name', 'Main');
-        $this->assertNotNull($main);
-        $this->assertSame('Main (676)', $main['label']);
-        $this->assertEquals(17777.0, (float) $main['amount']);
-
-        $third = collect($props['unitElectricityLastYear'])->first(
-            fn ($row) => ($row['unit'] ?? null) === '3rd' || str_contains($row['label'], '3rd')
+        $trendMeter = collect($props['unitMeterTrendLastYear']['meters'])->first(
+            fn ($row) => str_contains($row['label'], '237') || str_contains($row['label'], '3rd')
         );
-        $this->assertNotNull($third);
-        $this->assertEquals(67629.0, (float) $third['amount']);
-        $this->assertStringContainsString('237', $third['label']);
+        $this->assertNotNull($trendMeter);
+        $this->assertCount(12, $trendMeter['amounts']);
+        $this->assertEquals(67629.0, (float) end($trendMeter['amounts']));
+        $this->assertEmpty(array_filter(
+            $props['unitMeterTrendLastYear']['meters'],
+            fn ($row) => str_contains(strtolower($row['label']), 'main')
+        ), 'Common meters must not appear in the unit meter trend picker');
+
+        $billedFirst = collect($props['unitBilledLastYear']['units'])->firstWhere('label', '1st');
+        $this->assertNotNull($billedFirst);
+        $this->assertCount(12, $billedFirst['amounts']);
+        $this->assertGreaterThan(0, (float) end($billedFirst['amounts']));
+        $this->assertEmpty(array_filter(
+            $props['unitBilledLastYear']['units'],
+            fn ($row) => strcasecmp($row['label'], '2nd') === 0
+        ), 'Owner-occupied 2nd floor should not appear in unit billed picker');
     }
 }
